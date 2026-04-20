@@ -3,6 +3,7 @@ from datetime import datetime, timedelta
 import dateparser
 from app.models import BookingResponse
 from app.services.servicetitan import create_booking
+from app.services.retell import update_call_metadata, store_call_job_mapping
 
 
 def parse_appointment_time(time_string):
@@ -73,6 +74,9 @@ async def book_appointment(request: Request):
     """
     data = await request.json()
 
+    # Extract call_id from Retell request (needed to update metadata after booking)
+    call_id = data.get('call_id') or data.get('call', {}).get('call_id')
+
     # Extract args from Retell's nested format, fallback to top-level for direct calls
     args = data.get('args', data)
 
@@ -93,31 +97,65 @@ async def book_appointment(request: Request):
         appointment_start = appointment_start or parsed_start or ""
         appointment_end = appointment_end or parsed_end or ""
     customer_type = args.get('customer_type') or "Residential"
-    is_homeowner = args.get('is_homeowner', True)
+    # Accept both 'is_homeowner' and 'owns_home' from Retell
+    is_homeowner = args.get('is_homeowner') or args.get('owns_home') or "yes"
+    promotional_emails = args.get('promotional_emails') or "yes"
     contact_preference = args.get('contact_preference', "Phone")
 
-    # Print nicely formatted booking summary to console
-    timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    print("\n")
-    print("╔══════════════════════════════════════════════════════════════╗")
-    print("║              NEW BOOKING REQUEST RECEIVED                    ║")
-    print("╠══════════════════════════════════════════════════════════════╣")
-    print(f"║  Customer Name    : {customer_name:<40} ║")
-    print(f"║  Address          : {address:<40} ║")
-    print(f"║  Phone            : {phone:<40} ║")
-    print(f"║  Alternate Phone  : {str(alternate_phone or 'N/A'):<40} ║")
-    print(f"║  Email            : {str(email or 'N/A'):<40} ║")
-    print(f"║  Issue Description: {issue_description:<40} ║")
-    print(f"║  Appointment Time : {appointment_time:<40} ║")
-    print(f"║  Appointment Start: {appointment_start:<40} ║")
-    print(f"║  Appointment End  : {appointment_end:<40} ║")
-    print(f"║  Customer Type    : {customer_type:<40} ║")
-    print(f"║  Is Homeowner     : {str(is_homeowner):<40} ║")
-    print(f"║  Contact Pref     : {contact_preference:<40} ║")
-    print("╠══════════════════════════════════════════════════════════════╣")
-    print(f"║  Received at      : {timestamp:<40} ║")
-    print("╚══════════════════════════════════════════════════════════════╝")
-    print("\n")
+    # Get to_number from Retell (passed as dynamic variable from inbound webhook)
+    to_number = args.get('to_number') or data.get('to_number')
+
+    # Get zone-based business_unit_id if provided (from check_service_area result)
+    zone_business_unit_id = args.get('business_unit_id')
+    zone_business_unit_name = args.get('business_unit_name')
+
+    # Campaign and business unit - lookup using to_number if available
+    campaign_id = None
+    business_unit_id = None
+
+    if to_number:
+        from app.services.servicetitan import get_live_call_campaign
+        print(f"[Booking] Looking up campaign using to_number: {to_number}")
+        campaign_info = get_live_call_campaign(phone, to_number)
+        campaign_id = campaign_info.get("campaign_id")
+        business_unit_id = campaign_info.get("business_unit_id")
+        print(f"[Booking] Found campaign: {campaign_info.get('campaign_name')} (ID: {campaign_id})")
+
+    # Override with zone-based business unit if provided (takes precedence)
+    if zone_business_unit_id:
+        print(f"[Booking] Using zone-based business unit: {zone_business_unit_name} (ID: {zone_business_unit_id})")
+        business_unit_id = int(zone_business_unit_id)
+
+    # Print nicely formatted booking summary to console (wrapped in try-except to never block operation)
+    try:
+        timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        print("\n")
+        print("╔══════════════════════════════════════════════════════════════╗")
+        print("║              NEW BOOKING REQUEST RECEIVED                    ║")
+        print("╠══════════════════════════════════════════════════════════════╣")
+        print(f"║  Customer Name    : {str(customer_name or ''):<40} ║")
+        print(f"║  Address          : {str(address or ''):<40} ║")
+        print(f"║  Phone            : {str(phone or ''):<40} ║")
+        print(f"║  Alternate Phone  : {str(alternate_phone or 'N/A'):<40} ║")
+        print(f"║  Email            : {str(email or 'N/A'):<40} ║")
+        print(f"║  Issue Description: {str(issue_description or ''):<40} ║")
+        print(f"║  Appointment Time : {str(appointment_time or ''):<40} ║")
+        print(f"║  Appointment Start: {str(appointment_start or ''):<40} ║")
+        print(f"║  Appointment End  : {str(appointment_end or ''):<40} ║")
+        print(f"║  Customer Type    : {str(customer_type or ''):<40} ║")
+        print(f"║  Is Homeowner     : {str(is_homeowner or ''):<40} ║")
+        print(f"║  Promo Emails     : {str(promotional_emails or ''):<40} ║")
+        print(f"║  To Number        : {str(to_number or 'Not provided'):<40} ║")
+        print(f"║  Campaign ID      : {str(campaign_id or 'Auto'):<40} ║")
+        bu_display = f"{business_unit_id} (zone: {zone_business_unit_name})" if zone_business_unit_id else str(business_unit_id or 'Auto')
+        print(f"║  Business Unit ID : {bu_display:<40} ║")
+        print(f"║  Retell Call ID   : {str(call_id or 'Not provided'):<40} ║")
+        print("╠══════════════════════════════════════════════════════════════╣")
+        print(f"║  Received at      : {timestamp:<40} ║")
+        print("╚══════════════════════════════════════════════════════════════╝")
+        print("\n")
+    except Exception as e:
+        print(f"[Booking] Warning: Could not print booking summary: {e}")
 
     # Create booking in ServiceTitan
     st_result = create_booking(
@@ -131,8 +169,11 @@ async def book_appointment(request: Request):
         appointment_end=appointment_end,
         customer_type=customer_type,
         is_homeowner=is_homeowner,
+        promotional_emails=promotional_emails,
         contact_preference=contact_preference,
-        alternate_phone=alternate_phone
+        alternate_phone=alternate_phone,
+        campaign_id=campaign_id,
+        business_unit_id=business_unit_id
     )
 
     # Create confirmation message for Retell to read back
@@ -141,6 +182,14 @@ async def book_appointment(request: Request):
 
     if st_result.get("status") == "success":
         success = True
+        job_id = st_result.get("job_id")
+
+        # Store call_id -> job_id mapping locally (for webhook lookup)
+        if call_id and job_id:
+            store_call_job_mapping(call_id, str(job_id))
+            # Also try to update Retell metadata (may fail but that's OK)
+            update_call_metadata(call_id, {"job_id": str(job_id)})
+
         confirmation_message = (
             f"Great! I've booked your appointment for {customer_name} "
             f"at {address} for {appointment_time}. "

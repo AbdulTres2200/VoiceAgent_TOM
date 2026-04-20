@@ -5,3 +5,7 @@ pydantic
 requests
 usaddress
 dateparser
+googlemaps
+openai
+pytest
+httpx

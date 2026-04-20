@@ -138,6 +138,10 @@ _job_type_detection_cache = {}
 # Keyed by cleaned from_number, expires after 1 hour
 _live_call_cache = {}
 
+# Service area cache - stores business_unit info from check_service_area
+# Keyed by cleaned phone number, expires after 1 hour
+_service_area_bu_cache = {}
+
 # Business unit cache (24 hour TTL)
 _business_unit_cache = {
     "units": [],
@@ -205,6 +209,34 @@ def get_live_call_to_number(from_number: str):
         else:
             # Expired, remove it
             del _live_call_cache[cleaned]
+    return None
+
+
+def store_service_area_business_unit(phone: str, business_unit_id: int, business_unit_name: str, zone_name: str = None):
+    """Store business unit info from service area check for use during booking."""
+    cleaned = clean_phone(phone)
+    if cleaned and business_unit_id:
+        _service_area_bu_cache[cleaned] = {
+            "business_unit_id": business_unit_id,
+            "business_unit_name": business_unit_name,
+            "zone_name": zone_name,
+            "timestamp": time.time()
+        }
+        print(f"[ServiceAreaCache] Stored BU for {cleaned}: {business_unit_name} (ID: {business_unit_id})")
+
+
+def get_service_area_business_unit(phone: str):
+    """Retrieve cached business unit from service area check (within 1 hour)."""
+    cleaned = clean_phone(phone)
+    if cleaned in _service_area_bu_cache:
+        cached = _service_area_bu_cache[cleaned]
+        age = time.time() - cached["timestamp"]
+        if age < 3600:  # 1 hour
+            print(f"[ServiceAreaCache] Found BU for {cleaned}: {cached['business_unit_name']} (ID: {cached['business_unit_id']}) ({int(age)}s old)")
+            return cached
+        else:
+            # Expired, remove it
+            del _service_area_bu_cache[cleaned]
     return None
 
 
@@ -1291,6 +1323,14 @@ def create_booking(customer_name, address, phone, email, issue_description,
 
     # Track business unit source for logging
     bu_source = "provided" if business_unit_id else None
+
+    # Check service area cache for zone-based business unit (highest priority)
+    if not business_unit_id:
+        cached_bu = get_service_area_business_unit(phone)
+        if cached_bu:
+            business_unit_id = cached_bu["business_unit_id"]
+            bu_source = f"zone ({cached_bu.get('zone_name', 'cached')})"
+            print(f"[ST] Using cached zone-based BU: {cached_bu['business_unit_name']} (ID: {business_unit_id})")
 
     # Look up campaign using cached to_number from inbound webhook
     if not campaign_id or not business_unit_id:

@@ -3,7 +3,7 @@ from fastapi import FastAPI, Request
 from dotenv import load_dotenv
 from app.routes import booking
 from app.webhooks import retell_webhook
-from app.services.servicetitan import test_connection, lookup_customer_by_phone, explore_account, lookup_by_address, fetch_account_config, get_campaign_from_call, get_campaign_details, get_latest_call, get_call_details, test_telecom, get_live_call_campaign, get_zones, get_job_types, get_job_types_from_st, detect_job_type, store_live_call_info, parse_appointment_time, get_business_unit_by_zone, get_business_units_from_st
+from app.services.servicetitan import test_connection, lookup_customer_by_phone, explore_account, lookup_by_address, fetch_account_config, get_campaign_from_call, get_campaign_details, get_latest_call, get_call_details, test_telecom, get_live_call_campaign, get_zones, get_job_types, get_job_types_from_st, detect_job_type, store_live_call_info, parse_appointment_time, get_business_unit_by_zone, get_business_units_from_st, store_service_area_business_unit
 from app.services.service_area import check_service_area, get_service_area_zips, preload_service_area_cache
 
 load_dotenv()
@@ -380,11 +380,13 @@ async def test_job_type(issue: str):
 async def check_service_area_endpoint(request: Request):
     """
     Check if an address is within the service area.
-    Returns service area status, parsed address, and zone info.
+    Returns service area status, parsed address, zone info, and business unit.
+    Caches business unit by phone for automatic use during booking.
     """
     data = await request.json()
     args = data.get('args', data)
     address = args.get('address') or args.get('street') or ""
+    phone = args.get('phone') or args.get('caller_phone') or args.get('from_number') or ""
 
     if not address:
         return {
@@ -393,6 +395,16 @@ async def check_service_area_endpoint(request: Request):
         }
 
     result = check_service_area(address, GOOGLE_MAPS_API_KEY)
+
+    # Cache the business unit for this phone number (for automatic lookup during booking)
+    if phone and result.get("business_unit_id"):
+        store_service_area_business_unit(
+            phone=phone,
+            business_unit_id=result["business_unit_id"],
+            business_unit_name=result.get("business_unit_name", ""),
+            zone_name=result.get("zone_name", "")
+        )
+
     return result
 
 

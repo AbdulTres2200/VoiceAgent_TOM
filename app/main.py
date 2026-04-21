@@ -144,16 +144,17 @@ async def inbound_webhook(request: Request):
     store_live_call_info(from_number, to_number)
 
     # Look up customer in ServiceTitan (with timeout to avoid blocking voice agent)
+    print("[Inbound] Timeout set to 8s for customer lookup")
     result = {"found": False}
     try:
         loop = asyncio.get_event_loop()
         with concurrent.futures.ThreadPoolExecutor() as executor:
             result = await asyncio.wait_for(
                 loop.run_in_executor(executor, lookup_customer_by_phone, clean_phone),
-                timeout=3.0  # 3 second timeout - don't block voice agent initialization
+                timeout=8.0  # 8 second timeout - allow more time for ST API
             )
     except asyncio.TimeoutError:
-        print(f"[Inbound Webhook] Customer lookup timed out after 3s, continuing without customer data")
+        print(f"[Inbound Webhook] Customer lookup timed out after 8s, continuing without customer data")
     except Exception as e:
         print(f"[Inbound Webhook] Customer lookup error: {e}")
 

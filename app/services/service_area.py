@@ -194,6 +194,14 @@ def parse_address_google(address_string: str, google_api_key: str = None):
                 result["street"] = f"{street_number} {route}".strip()
                 result["method"] = "google"
 
+                # Fallback: if Google didn't return zip, try to extract from original input
+                if not result["zip"]:
+                    import re
+                    zip_match = re.search(r'\b(\d{5})(?:-\d{4})?\b', address_string)
+                    if zip_match:
+                        result["zip"] = zip_match.group(1)
+                        print(f"  Google missing zip, extracted from input: {result['zip']}")
+
                 print(f"  Google result: {result['street']}, {result['city']}, {result['state']} {result['zip']}")
                 return result
 

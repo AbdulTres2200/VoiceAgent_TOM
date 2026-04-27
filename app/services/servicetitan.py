@@ -1906,6 +1906,7 @@ def lookup_customer_by_phone(phone: str):
     """
     Look up a customer in ServiceTitan CRM by phone number.
     Returns customer info, contacts, and recent job history.
+    If multiple customers match, returns the one with most recent job activity.
     """
     print(f"[ServiceTitan] Looking up customer by phone: {phone}")
 
@@ -1933,9 +1934,49 @@ def lookup_customer_by_phone(phone: str):
         print(f"[ServiceTitan] No customer found for phone: {phone}")
         return {"found": False, "message": "No customer found with this phone number"}
 
-    customer = customers[0]
+    print(f"[ServiceTitan] Found {len(customers)} customer(s) matching phone: {phone}")
+
+    # If multiple customers, find the one with most recent job activity
+    if len(customers) > 1:
+        customer = None
+        most_recent_job_date = None
+        jobs_url = f"https://api.servicetitan.io/jpm/v2/tenant/{TENANT_ID}/jobs"
+
+        for cust in customers:
+            cust_id = cust["id"]
+            # Get most recent job for this customer
+            jobs_resp = requests.get(jobs_url, headers=headers, params={
+                "customerId": cust_id,
+                "pageSize": 1,
+                "orderBy": "createdOn",
+                "orderByDirection": "desc"
+            })
+
+            if jobs_resp.status_code == 200:
+                jobs = jobs_resp.json().get("data", [])
+                if jobs:
+                    job_date = jobs[0].get("createdOn", "")
+                    print(f"[ServiceTitan] Customer {cust['name']} (ID: {cust_id}) - most recent job: {job_date}")
+                    if most_recent_job_date is None or job_date > most_recent_job_date:
+                        most_recent_job_date = job_date
+                        customer = cust
+                else:
+                    print(f"[ServiceTitan] Customer {cust['name']} (ID: {cust_id}) - no jobs found")
+                    # If no customer selected yet and this one has no jobs, keep as fallback
+                    if customer is None:
+                        customer = cust
+
+        # Fallback to first customer if none had jobs
+        if customer is None:
+            customer = customers[0]
+            print(f"[ServiceTitan] No jobs found for any customer, using first: {customer['name']}")
+        else:
+            print(f"[ServiceTitan] Selected customer with most recent activity: {customer['name']}")
+    else:
+        customer = customers[0]
+
     customer_id = customer["id"]
-    print(f"[ServiceTitan] Found customer: {customer['name']} (ID: {customer_id})")
+    print(f"[ServiceTitan] Using customer: {customer['name']} (ID: {customer_id})")
 
     # Get customer contacts
     contacts_url = f"https://api.servicetitan.io/crm/v2/tenant/{TENANT_ID}/customers/{customer_id}/contacts"

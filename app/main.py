@@ -108,9 +108,8 @@ async def inbound_webhook(request: Request):
     Receives call payload, looks up caller in ServiceTitan CRM,
     and returns dynamic variables for the AI agent.
 
-    OPTIMIZED:
-    - Removed campaign lookup - done during booking instead
-    - Added 30s deduplication cache to avoid duplicate lookups
+    Returns: caller_number, campaign_id, campaign_name, business_unit_id, business_unit_name,
+             customer_name, customer_address, customer_found, recent_job, to_number
     """
     import asyncio
     import concurrent.futures
@@ -148,10 +147,20 @@ async def inbound_webhook(request: Request):
             print(f"[Inbound Webhook] Returning cached response for {from_number} (age: {now - cached_time:.1f}s)")
             return cached_response
 
-    # Clean phone number: strip +1, dashes, spaces, parentheses
-    clean_phone = from_number.replace("+1", "").replace("-", "").replace(" ", "").replace("(", "").replace(")", "")
+    # Clean phone number based on country code:
+    # - +92 (Pakistan): strip + only -> 923343060393
+    # - +1 (US): strip +1 -> 10 digit number
+    # - Otherwise: strip + only
+    cleaned_from_number = from_number.replace("-", "").replace(" ", "").replace("(", "").replace(")", "")
+    if cleaned_from_number.startswith("+1"):
+        cleaned_from_number = cleaned_from_number[2:]  # Strip +1
+    elif cleaned_from_number.startswith("+"):
+        cleaned_from_number = cleaned_from_number[1:]  # Strip + only
 
-    print(f"[Inbound Webhook] Received call from: {from_number} -> cleaned: {clean_phone}")
+    # For ServiceTitan lookup, use the 10-digit version
+    clean_phone = cleaned_from_number[-10:] if len(cleaned_from_number) >= 10 else cleaned_from_number
+
+    print(f"[Inbound Webhook] Received call from: {from_number} -> cleaned: {cleaned_from_number}")
     print(f"[Inbound Webhook] To number: {to_number}")
 
     # Cache the to_number for this caller (so booking can look up campaign later)
@@ -177,10 +186,36 @@ async def inbound_webhook(request: Request):
     else:
         print(f"[Inbound Webhook] Skipping customer lookup - no valid phone number")
 
-    # Build dynamic variables - to_number is passed for campaign lookup during booking
+    # Look up campaign info from to_number
+    campaign_id = ""
+    campaign_name = ""
+    business_unit_id = ""
+    business_unit_name = ""
+
+    if to_number:
+        campaign_info = get_live_call_campaign(from_number, to_number)
+        if campaign_info:
+            campaign_id = str(campaign_info.get("campaign_id", "")) if campaign_info.get("campaign_id") else ""
+            campaign_name = campaign_info.get("campaign_name", "") or ""
+            business_unit_id = str(campaign_info.get("business_unit_id", "")) if campaign_info.get("business_unit_id") else ""
+            business_unit_name = campaign_info.get("business_unit_name", "") or ""
+            print(f"[Inbound] Campaign found: {campaign_name} (ID: {campaign_id}), BU: {business_unit_name} (ID: {business_unit_id})")
+
+    # Build dynamic variables
     dynamic_vars = {
-        "to_number": to_number
+        "to_number": to_number,
+        "caller_number": cleaned_from_number
     }
+
+    # Add campaign/business unit info (only if we have values)
+    if campaign_id:
+        dynamic_vars["campaign_id"] = campaign_id
+    if campaign_name:
+        dynamic_vars["campaign_name"] = campaign_name
+    if business_unit_id:
+        dynamic_vars["business_unit_id"] = business_unit_id
+    if business_unit_name:
+        dynamic_vars["business_unit_name"] = business_unit_name
 
     if result.get("found"):
         customer = result.get("customer", {})
@@ -209,6 +244,8 @@ async def inbound_webhook(request: Request):
             "customer_found": "false",
             "recent_job": ""
         })
+
+    print(f"[Inbound] Dynamic variables being sent to Retell: {dynamic_vars}")
 
     response = {
         "call_inbound": {

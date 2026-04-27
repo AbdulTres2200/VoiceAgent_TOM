@@ -10,6 +10,7 @@ from app.services.service_area import check_service_area, get_service_area_zips,
 load_dotenv()
 
 GOOGLE_MAPS_API_KEY = os.getenv("GOOGLE_MAPS_API_KEY")
+print(f"[Config] GOOGLE_MAPS_API_KEY: {'SET (' + str(len(GOOGLE_MAPS_API_KEY)) + ' chars)' if GOOGLE_MAPS_API_KEY else 'NOT SET'}")
 
 app = FastAPI(
     title="ServiceTitan Voice Agent",

@@ -3,7 +3,8 @@ from fastapi import FastAPI, Request
 from dotenv import load_dotenv
 from app.routes import booking
 from app.webhooks import retell_webhook
-from app.services.servicetitan import test_connection, lookup_customer_by_phone, explore_account, lookup_by_address, fetch_account_config, get_campaign_from_call, get_campaign_details, get_latest_call, get_call_details, test_telecom, get_live_call_campaign, get_zones, get_job_types, get_job_types_from_st, detect_job_type, store_live_call_info, parse_appointment_time, get_business_unit_by_zone, get_business_units_from_st, store_service_area_business_unit
+from app.webhooks.retell_webhook import is_lead_already_created, mark_lead_created
+from app.services.servicetitan import test_connection, lookup_customer_by_phone, explore_account, lookup_by_address, fetch_account_config, get_campaign_from_call, get_campaign_details, get_latest_call, get_call_details, test_telecom, get_live_call_campaign, get_zones, get_job_types, get_job_types_from_st, detect_job_type, store_live_call_info, parse_appointment_time, get_business_unit_by_zone, get_business_units_from_st, store_service_area_business_unit, store_service_area_address, store_service_area_bu_by_address, create_lead, get_access_token, TENANT_ID, APP_KEY, clean_phone
 from app.services.service_area import check_service_area, get_service_area_zips, preload_service_area_cache
 
 load_dotenv()
@@ -95,6 +96,10 @@ import time
 _inbound_cache = {}
 _INBOUND_CACHE_TTL = 30  # seconds
 
+# Cache for post-call webhook deduplication (call_id -> timestamp)
+_postcall_processed = {}
+_POSTCALL_CACHE_TTL = 300  # 5 minutes - prevent duplicate processing
+
 
 @app.post("/inbound-webhook")
 async def inbound_webhook(request: Request):
@@ -112,15 +117,24 @@ async def inbound_webhook(request: Request):
 
     data = await request.json()
 
-    # Get from_number and to_number from Retell payload - nested under call_inbound
-    call_inbound = data.get("call_inbound", {})
+    # Debug: log payload structure to identify where phone numbers are
+    print(f"[Inbound Webhook] Payload keys: {list(data.keys())}")
+
+    # Retell sends data under "call" or "call_inbound" depending on event type
+    call_data = data.get("call", {}) or data.get("call_inbound", {})
+    if call_data:
+        print(f"[Inbound Webhook] call data keys: {list(call_data.keys())}")
+
+    # Get from_number and to_number from Retell payload - try multiple locations
     from_number = (
-        call_inbound.get("from_number") or
+        call_data.get("from_number") or
+        call_data.get("caller_number") or
         data.get("from_number") or
         ""
     )
     to_number = (
-        call_inbound.get("to_number") or
+        call_data.get("to_number") or
+        call_data.get("callee_number") or
         data.get("to_number") or
         ""
     )
@@ -141,22 +155,27 @@ async def inbound_webhook(request: Request):
     print(f"[Inbound Webhook] To number: {to_number}")
 
     # Cache the to_number for this caller (so booking can look up campaign later)
-    store_live_call_info(from_number, to_number)
+    if from_number and to_number:
+        store_live_call_info(from_number, to_number)
 
     # Look up customer in ServiceTitan (with timeout to avoid blocking voice agent)
-    print("[Inbound] Timeout set to 8s for customer lookup")
+    # IMPORTANT: Skip lookup if phone is empty to avoid returning wrong customer
     result = {"found": False}
-    try:
-        loop = asyncio.get_event_loop()
-        with concurrent.futures.ThreadPoolExecutor() as executor:
-            result = await asyncio.wait_for(
-                loop.run_in_executor(executor, lookup_customer_by_phone, clean_phone),
-                timeout=8.0  # 8 second timeout - allow more time for ST API
-            )
-    except asyncio.TimeoutError:
-        print(f"[Inbound Webhook] Customer lookup timed out after 8s, continuing without customer data")
-    except Exception as e:
-        print(f"[Inbound Webhook] Customer lookup error: {e}")
+    if clean_phone and len(clean_phone) >= 10:
+        print("[Inbound] Timeout set to 8s for customer lookup")
+        try:
+            loop = asyncio.get_event_loop()
+            with concurrent.futures.ThreadPoolExecutor() as executor:
+                result = await asyncio.wait_for(
+                    loop.run_in_executor(executor, lookup_customer_by_phone, clean_phone),
+                    timeout=8.0  # 8 second timeout - allow more time for ST API
+                )
+        except asyncio.TimeoutError:
+            print(f"[Inbound Webhook] Customer lookup timed out after 8s, continuing without customer data")
+        except Exception as e:
+            print(f"[Inbound Webhook] Customer lookup error: {e}")
+    else:
+        print(f"[Inbound Webhook] Skipping customer lookup - no valid phone number")
 
     # Build dynamic variables - to_number is passed for campaign lookup during booking
     dynamic_vars = {
@@ -389,6 +408,10 @@ async def check_service_area_endpoint(request: Request):
     address = args.get('address') or args.get('street') or ""
     phone = args.get('phone') or args.get('caller_phone') or args.get('from_number') or ""
 
+    print(f"[ServiceArea] Request data keys: {list(data.keys())}")
+    print(f"[ServiceArea] Args keys: {list(args.keys()) if isinstance(args, dict) else 'not a dict'}")
+    print(f"[ServiceArea] Phone extracted: '{phone}'")
+
     if not address:
         return {
             "in_service_area": False,
@@ -404,6 +427,26 @@ async def check_service_area_endpoint(request: Request):
             business_unit_id=result["business_unit_id"],
             business_unit_name=result.get("business_unit_name", ""),
             zone_name=result.get("zone_name", "")
+        )
+
+    # ALWAYS cache business unit by address (works even without phone)
+    if result.get("business_unit_id") and result.get("street") and result.get("zip_code"):
+        store_service_area_bu_by_address(
+            street=result.get("street", ""),
+            zip_code=result.get("zip_code", ""),
+            business_unit_id=result["business_unit_id"],
+            business_unit_name=result.get("business_unit_name", ""),
+            zone_name=result.get("zone_name", "")
+        )
+
+    # Cache the parsed address for this phone number (for lead/location creation)
+    if phone and result.get("street"):
+        store_service_area_address(
+            phone=phone,
+            street=result.get("street", ""),
+            city=result.get("city", ""),
+            state=result.get("state", ""),
+            zip_code=result.get("zip_code", "")
         )
 
     return result
@@ -569,3 +612,381 @@ async def test_business_unit():
         "business_units_in_st": [{"id": u.get("id"), "name": u.get("name")} for u in units],
         "zone_mappings": results
     }
+
+
+@app.get("/test-call-reasons")
+async def test_call_reasons():
+    """
+    Test multiple call reasons API endpoints in ServiceTitan.
+    Tries CRM leads call-reasons, settings call-reasons, and leads list.
+    """
+    import requests
+    import json
+    from app.services.servicetitan import get_access_token, TENANT_ID, APP_KEY
+
+    token = get_access_token()
+    headers = {
+        "Authorization": f"Bearer {token}",
+        "ST-App-Key": APP_KEY
+    }
+
+    results = {}
+
+    # 1. CRM Leads Call Reasons
+    print("\n" + "=" * 70)
+    print("1. CRM LEADS CALL REASONS")
+    print("=" * 70)
+    url1 = f"https://api.servicetitan.io/crm/v2/tenant/{TENANT_ID}/leads/call-reasons?pageSize=50"
+    print(f"GET {url1}")
+    resp1 = requests.get(url1, headers=headers)
+    print(f"Status: {resp1.status_code}")
+    response1 = resp1.json() if resp1.status_code == 200 else resp1.text
+    print(f"Response: {json.dumps(response1, indent=2)[:2000]}")
+    results["crm_leads_call_reasons"] = {
+        "url": url1,
+        "status": resp1.status_code,
+        "response": response1
+    }
+
+    # 2. Settings Call Reasons
+    print("\n" + "=" * 70)
+    print("2. SETTINGS CALL REASONS")
+    print("=" * 70)
+    url2 = f"https://api.servicetitan.io/settings/v2/tenant/{TENANT_ID}/call-reasons?pageSize=50"
+    print(f"GET {url2}")
+    resp2 = requests.get(url2, headers=headers)
+    print(f"Status: {resp2.status_code}")
+    response2 = resp2.json() if resp2.status_code == 200 else resp2.text
+    print(f"Response: {json.dumps(response2, indent=2)[:2000]}")
+    results["settings_call_reasons"] = {
+        "url": url2,
+        "status": resp2.status_code,
+        "response": response2
+    }
+
+    # 3. Leads List (to see lead structure)
+    print("\n" + "=" * 70)
+    print("3. LEADS LIST (sample structure)")
+    print("=" * 70)
+    url3 = f"https://api.servicetitan.io/crm/v2/tenant/{TENANT_ID}/leads?pageSize=3"
+    print(f"GET {url3}")
+    resp3 = requests.get(url3, headers=headers)
+    print(f"Status: {resp3.status_code}")
+    response3 = resp3.json() if resp3.status_code == 200 else resp3.text
+    print(f"Response: {json.dumps(response3, indent=2)[:2000]}")
+    results["leads_sample"] = {
+        "url": url3,
+        "status": resp3.status_code,
+        "response": response3
+    }
+
+    print("\n" + "=" * 70)
+    print("DONE")
+    print("=" * 70)
+
+    return results
+
+
+@app.get("/test-create-lead")
+async def test_create_lead():
+    """
+    Test lead creation in ServiceTitan CRM.
+    Creates a test lead for an inquiry call.
+    """
+    lead_id = create_lead(
+        call_type="INQUIRY",
+        summary="Caller asked about water heater pricing, not ready to book",
+        from_number="4125550001",
+        campaign_id=1410706053,
+        business_unit_id=1239
+    )
+
+    if lead_id:
+        return {
+            "success": True,
+            "lead_id": lead_id,
+            "message": "Test lead created successfully"
+        }
+    else:
+        return {
+            "success": False,
+            "error": "Failed to create lead"
+        }
+
+
+@app.get("/test-lead-with-address")
+async def test_lead_with_address():
+    """
+    Test lead creation for customer with no location but cached address.
+    Simulates the failed JONES, ANN scenario.
+    """
+    # Step 1: Cache the address (like check-service-area does)
+    store_service_area_address(
+        phone="7245538700",
+        street="408 Walter Street",
+        city="Yorkville",
+        state="OH",
+        zip_code="43971"
+    )
+
+    # Step 2: Create lead (customer JONES, ANN has no locations)
+    lead_id = create_lead(
+        call_type="INQUIRY",
+        summary="The caller reported a backed-up drain in their basement. Address is outside service area, transferred to regional specialists.",
+        from_number="7245538700",
+        campaign_id=1410706053,
+        business_unit_id=1239
+    )
+
+    if lead_id:
+        return {
+            "success": True,
+            "lead_id": lead_id,
+            "message": "Lead created successfully with cached address"
+        }
+    else:
+        return {
+            "success": False,
+            "error": "Failed to create lead"
+        }
+
+
+@app.post("/post-call-webhook")
+async def post_call_webhook(request: Request):
+    """
+    Retell AI post-call webhook.
+    Analyzes call transcript to determine if booking was made,
+    then either attaches recording to job or creates a lead.
+    """
+    import requests
+    from datetime import datetime, timedelta, timezone
+    from openai import OpenAI
+
+    data = await request.json()
+
+    # Extract call data from Retell payload
+    call_data = data.get("call", {})
+    call_id = call_data.get("call_id", "unknown")
+
+    # Check deduplication - prevent processing same call multiple times
+    now = time.time()
+    if call_id in _postcall_processed:
+        cached_time = _postcall_processed[call_id]
+        if now - cached_time < _POSTCALL_CACHE_TTL:
+            print(f"[PostCall] Duplicate call {call_id}, already processed {int(now - cached_time)}s ago, skipping")
+            return {"status": "ok"}
+
+    # Mark as processed
+    _postcall_processed[call_id] = now
+
+    # Clean up old cache entries
+    expired_keys = [k for k, v in _postcall_processed.items() if now - v > _POSTCALL_CACHE_TTL]
+    for k in expired_keys:
+        del _postcall_processed[k]
+
+    recording_url = call_data.get("recording_url", "")
+    transcript = call_data.get("transcript", "")
+    from_number = call_data.get("from_number", "")
+    to_number = call_data.get("to_number", "")
+    start_timestamp = call_data.get("start_timestamp")
+    end_timestamp = call_data.get("end_timestamp")
+
+    # Calculate duration
+    duration_seconds = 0
+    if start_timestamp and end_timestamp:
+        duration_seconds = round((end_timestamp - start_timestamp) / 1000)
+
+    # Extract dynamic variables
+    dynamic_variables = call_data.get("retell_llm_dynamic_variables", {})
+    collected_variables = call_data.get("collected_dynamic_variables", {})
+    customer_name = dynamic_variables.get("customer_name", "Unknown")
+    campaign_id = dynamic_variables.get("campaign_id", 1410706053)
+    business_unit_id = dynamic_variables.get("business_unit_id", 1239)
+
+    # Clean phone number
+    cleaned_from_number = clean_phone(from_number)
+
+    print("\n")
+    print("╔══════════════════════════════════════════════════════════════╗")
+    print("║           POST CALL WEBHOOK RECEIVED                         ║")
+    print("╠══════════════════════════════════════════════════════════════╣")
+    print(f"║  Call ID:    {call_id:<47} ║")
+    print(f"║  From:       {from_number:<47} ║")
+    print(f"║  Duration:   {duration_seconds}s{' ':<44}║")
+    print(f"║  Transcript: {'Yes' if transcript else 'No':<47} ║")
+    print("╚══════════════════════════════════════════════════════════════╝")
+
+    # Skip processing if call hasn't ended (no duration and no transcript)
+    if duration_seconds == 0 and not transcript:
+        print("[PostCall] Call still in progress (0s duration, no transcript) - skipping")
+        # Remove from processed cache so it can be processed later when call ends
+        if call_id in _postcall_processed:
+            del _postcall_processed[call_id]
+        return {"status": "ok"}
+
+    # Default values
+    booking_made = "no"
+    call_type = "OTHER"
+    summary = "Call transcript analysis unavailable"
+    action_result = "None"
+
+    # Analyze transcript with OpenAI
+    if transcript:
+        try:
+            print("[PostCall] Analyzing transcript with AI...")
+            client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
+
+            response = client.chat.completions.create(
+                model="gpt-4o-mini",
+                max_tokens=150,
+                temperature=0,
+                messages=[
+                    {
+                        "role": "system",
+                        "content": """Analyze this plumbing company call transcript and respond in EXACTLY this format:
+BOOKING_MADE:yes or no
+CALL_TYPE:BOOKING or INQUIRY or VENDOR or INVOICING or FOLLOWUP or OTHER
+SUMMARY:Brief 2-3 sentence summary of the call"""
+                    },
+                    {
+                        "role": "user",
+                        "content": f"Transcript:\n{transcript}"
+                    }
+                ]
+            )
+
+            ai_response = response.choices[0].message.content.strip()
+            print(f"[PostCall] AI response:\n{ai_response}")
+
+            # Parse the response
+            for line in ai_response.split("\n"):
+                line = line.strip()
+                if line.startswith("BOOKING_MADE:"):
+                    booking_made = line.replace("BOOKING_MADE:", "").strip().lower()
+                elif line.startswith("CALL_TYPE:"):
+                    call_type = line.replace("CALL_TYPE:", "").strip().upper()
+                elif line.startswith("SUMMARY:"):
+                    summary = line.replace("SUMMARY:", "").strip()
+
+        except Exception as e:
+            print(f"[PostCall] AI analysis failed: {e}")
+
+    # Get ST API headers
+    token = get_access_token()
+    headers = {
+        "Authorization": f"Bearer {token}",
+        "ST-App-Key": APP_KEY,
+        "Content-Type": "application/json"
+    }
+
+    # Build note text
+    note_text = f"""=== RETELL AI CALL RECORDING ===
+
+Call ID: {call_id}
+From: {from_number}
+Duration: {duration_seconds}s
+Recording: {recording_url}
+
+=== TRANSCRIPT ===
+{transcript}"""
+
+    if booking_made == "yes":
+        # Find recent job for this caller
+        print(f"[PostCall] Booking detected - searching for recent job...")
+
+        jobs_url = f"https://api.servicetitan.io/jpm/v2/tenant/{TENANT_ID}/jobs"
+        params = {"pageSize": 5, "orderBy": "Id", "orderByDirection": "desc"}
+
+        if cleaned_from_number:
+            params["phone"] = cleaned_from_number
+
+        jobs_resp = requests.get(jobs_url, headers=headers, params=params)
+
+        if jobs_resp.status_code == 200:
+            jobs = jobs_resp.json().get("data", [])
+            job_id = None
+
+            # Find job created within last 2 hours
+            two_hours_ago = datetime.now(timezone.utc) - timedelta(hours=2)
+
+            for job in jobs:
+                created_on = job.get("createdOn", "")
+                if created_on:
+                    try:
+                        # Parse ISO format datetime
+                        job_created = datetime.fromisoformat(created_on.replace("Z", "+00:00"))
+                        if job_created > two_hours_ago:
+                            job_id = job.get("id")
+                            print(f"[PostCall] Found recent job: {job_id}")
+                            break
+                    except Exception as e:
+                        print(f"[PostCall] Error parsing job date: {e}")
+
+            if job_id:
+                # Add note to job
+                note_url = f"https://api.servicetitan.io/jpm/v2/tenant/{TENANT_ID}/jobs/{job_id}/notes"
+                note_resp = requests.post(note_url, headers=headers, json={"text": note_text})
+
+                if note_resp.status_code in (200, 201):
+                    print(f"[PostCall] Booking detected - attaching to job {job_id}")
+                    action_result = f"Job {job_id}"
+                else:
+                    print(f"[PostCall] Failed to add note to job: {note_resp.status_code} - {note_resp.text}")
+                    action_result = f"Job {job_id} (note failed)"
+            else:
+                print("[PostCall] No recent job found, creating lead instead")
+                booking_made = "no"  # Fall through to lead creation
+        else:
+            print(f"[PostCall] Jobs lookup failed: {jobs_resp.status_code}")
+            booking_made = "no"  # Fall through to lead creation
+
+    if booking_made != "yes":
+        # Check if lead was already created by another webhook
+        if is_lead_already_created(call_id):
+            print(f"[PostCall] Lead already created for this call (dedup), skipping")
+            action_result = "Lead already created (dedup)"
+        else:
+            # Create lead for non-booking call
+            print(f"[PostCall] Non-booking call - creating lead...")
+
+            lead_id = create_lead(
+                call_type=call_type,
+                summary=summary,
+                from_number=cleaned_from_number,
+                campaign_id=int(campaign_id),
+                business_unit_id=int(business_unit_id)
+            )
+
+            if lead_id:
+                # Mark as created to prevent duplicates
+                mark_lead_created(call_id)
+                # Add note to lead with recording and transcript
+                note_url = f"https://api.servicetitan.io/crm/v2/tenant/{TENANT_ID}/leads/{lead_id}/notes"
+                note_resp = requests.post(note_url, headers=headers, json={"text": note_text})
+
+                if note_resp.status_code in (200, 201):
+                    print(f"[PostCall] Non-booking call - lead {lead_id} created and recording attached")
+                    action_result = f"Lead {lead_id}"
+                else:
+                    print(f"[PostCall] Lead created but note failed: {note_resp.status_code} - {note_resp.text}")
+                    action_result = f"Lead {lead_id} (note failed)"
+            else:
+                print("[PostCall] Failed to create lead")
+                action_result = "Lead creation failed"
+
+    # Print final summary
+    print("\n")
+    print("╔══════════════════════════════════════════════════════════════╗")
+    print("║           POST CALL WEBHOOK SUMMARY                          ║")
+    print("╠══════════════════════════════════════════════════════════════╣")
+    print(f"║  Call ID:      {call_id:<45} ║")
+    print(f"║  From:         {from_number:<45} ║")
+    print(f"║  Duration:     {duration_seconds}s{' ':<43}║")
+    print(f"║  Booking Made: {booking_made:<45} ║")
+    print(f"║  Call Type:    {call_type:<45} ║")
+    print(f"║  Summary:      {summary[:43]:<45} ║")
+    print(f"║  Action:       {action_result:<45} ║")
+    print("╚══════════════════════════════════════════════════════════════╝")
+    print("\n")
+
+    return {"status": "ok"}

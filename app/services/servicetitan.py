@@ -142,6 +142,14 @@ _live_call_cache = {}
 # Keyed by cleaned phone number, expires after 1 hour
 _service_area_bu_cache = {}
 
+# Service area cache by address - stores business_unit info keyed by zip+street_number
+# Used when phone number is not available (e.g., Retell custom functions)
+_service_area_bu_by_address_cache = {}
+
+# Service area address cache - stores parsed address from check_service_area
+# Keyed by cleaned phone number, expires after 1 hour
+_service_area_address_cache = {}
+
 # Business unit cache (24 hour TTL)
 _business_unit_cache = {
     "units": [],
@@ -237,6 +245,78 @@ def get_service_area_business_unit(phone: str):
         else:
             # Expired, remove it
             del _service_area_bu_cache[cleaned]
+    return None
+
+
+def store_service_area_address(phone: str, street: str, city: str, state: str, zip_code: str):
+    """Store parsed address from service area check for use when creating leads/locations."""
+    cleaned = clean_phone(phone)
+    if cleaned and street:
+        _service_area_address_cache[cleaned] = {
+            "street": street,
+            "city": city,
+            "state": state,
+            "zip": zip_code,
+            "country": DEFAULT_COUNTRY,
+            "timestamp": time.time()
+        }
+        print(f"[ServiceAreaCache] Stored address for {cleaned}: {street}, {city}, {state} {zip_code}")
+
+
+def get_service_area_address(phone: str):
+    """Retrieve cached address from service area check (within 1 hour)."""
+    cleaned = clean_phone(phone)
+    if cleaned in _service_area_address_cache:
+        cached = _service_area_address_cache[cleaned]
+        age = time.time() - cached["timestamp"]
+        if age < 3600:  # 1 hour
+            print(f"[ServiceAreaCache] Found address for {cleaned}: {cached['street']}, {cached['city']} ({int(age)}s old)")
+            return cached
+        else:
+            # Expired, remove it
+            del _service_area_address_cache[cleaned]
+    return None
+
+
+def _make_address_key(street: str, zip_code: str) -> str:
+    """Create a normalized cache key from street and zip code.
+    Uses zip + first number from street (e.g., '16511:541' for '541 Parkside Dr, 16511')
+    """
+    if not zip_code:
+        return None
+    # Extract first number from street address
+    import re
+    match = re.search(r'(\d+)', street or '')
+    street_num = match.group(1) if match else ''
+    if not street_num:
+        return None
+    return f"{zip_code}:{street_num}"
+
+
+def store_service_area_bu_by_address(street: str, zip_code: str, business_unit_id: int, business_unit_name: str, zone_name: str = None):
+    """Store business unit info by address for cases where phone is not available."""
+    key = _make_address_key(street, zip_code)
+    if key and business_unit_id:
+        _service_area_bu_by_address_cache[key] = {
+            "business_unit_id": business_unit_id,
+            "business_unit_name": business_unit_name,
+            "zone_name": zone_name,
+            "timestamp": time.time()
+        }
+        print(f"[ServiceAreaCache] Stored BU by address key '{key}': {business_unit_name} (ID: {business_unit_id})")
+
+
+def get_service_area_bu_by_address(street: str, zip_code: str):
+    """Retrieve cached business unit by address (within 1 hour)."""
+    key = _make_address_key(street, zip_code)
+    if key and key in _service_area_bu_by_address_cache:
+        cached = _service_area_bu_by_address_cache[key]
+        age = time.time() - cached["timestamp"]
+        if age < 3600:  # 1 hour
+            print(f"[ServiceAreaCache] Found BU by address key '{key}': {cached['business_unit_name']} (ID: {cached['business_unit_id']}) ({int(age)}s old)")
+            return cached
+        else:
+            del _service_area_bu_by_address_cache[key]
     return None
 
 
@@ -450,6 +530,7 @@ def get_job_types_from_st():
     try:
         resp = requests.get(url, headers=headers, params=params)
         print(f"[Job Types] API Status: {resp.status_code}")
+
 
         if resp.status_code == 200:
             data = resp.json()
@@ -1321,16 +1402,28 @@ def create_booking(customer_name, address, phone, email, issue_description,
 
     print(f"[ST] Customer Type: {customer_type}")
 
+    # Parse address early so we can use it for cache lookups
+    parsed_addr = parse_address(address)
+
     # Track business unit source for logging
     bu_source = "provided" if business_unit_id else None
 
     # Check service area cache for zone-based business unit (highest priority)
+    # Try phone-based cache first
     if not business_unit_id:
         cached_bu = get_service_area_business_unit(phone)
         if cached_bu:
             business_unit_id = cached_bu["business_unit_id"]
             bu_source = f"zone ({cached_bu.get('zone_name', 'cached')})"
-            print(f"[ST] Using cached zone-based BU: {cached_bu['business_unit_name']} (ID: {business_unit_id})")
+            print(f"[ST] Using cached zone-based BU (by phone): {cached_bu['business_unit_name']} (ID: {business_unit_id})")
+
+    # Try address-based cache if phone-based didn't work
+    if not business_unit_id:
+        cached_bu = get_service_area_bu_by_address(parsed_addr.get("street", ""), parsed_addr.get("zip", ""))
+        if cached_bu:
+            business_unit_id = cached_bu["business_unit_id"]
+            bu_source = f"zone-address ({cached_bu.get('zone_name', 'cached')})"
+            print(f"[ST] Using cached zone-based BU (by address): {cached_bu['business_unit_name']} (ID: {business_unit_id})")
 
     # Look up campaign using cached to_number from inbound webhook
     if not campaign_id or not business_unit_id:
@@ -1368,9 +1461,6 @@ def create_booking(customer_name, address, phone, email, issue_description,
         "ST-App-Key": APP_KEY,
         "Content-Type": "application/json"
     }
-
-    # Parse address
-    parsed_addr = parse_address(address)
 
     address_obj = {
         "street": parsed_addr["street"],
@@ -1536,7 +1626,280 @@ def create_booking(customer_name, address, phone, email, issue_description,
         "customer_id": customer_id
     }
 
-    
+
+def create_lead(call_type: str, summary: str, from_number: str, campaign_id: int, business_unit_id: int):
+    """
+    Create a lead in ServiceTitan CRM for non-booking calls.
+    Used for inquiries, callbacks, and other call outcomes that don't result in a booking.
+
+    Args:
+        call_type: Type of call (e.g., "INQUIRY", "CALLBACK", "INFO")
+        summary: Description of the call/inquiry
+        from_number: Caller's phone number
+        campaign_id: Campaign ID to associate with the lead
+        business_unit_id: Business unit ID for routing
+
+    Returns:
+        lead_id on success, None on failure
+    """
+    print("\n" + "=" * 70)
+    print("                    CREATE LEAD")
+    print("=" * 70)
+    print(f"  Call Type: {call_type}")
+    print(f"  Summary: {summary}")
+    print(f"  From: {from_number}")
+    print(f"  Campaign ID: {campaign_id}")
+    print(f"  Business Unit ID: {business_unit_id}")
+    print("=" * 70)
+
+    token = get_access_token()
+    headers = {
+        "Authorization": f"Bearer {token}",
+        "ST-App-Key": APP_KEY,
+        "Content-Type": "application/json"
+    }
+
+    # Step 1: Clean phone number and look up customer
+    cleaned_phone = clean_phone(from_number)
+    customer_id = None
+    location_id = None
+    customer_name = "Unknown Caller"
+
+    if cleaned_phone:
+        print(f"\n[Lead] Looking up customer by phone: {cleaned_phone}")
+        search_url = f"https://api.servicetitan.io/crm/v2/tenant/{TENANT_ID}/customers"
+        search_resp = requests.get(search_url, headers=headers, params={"phone": cleaned_phone})
+
+        if search_resp.status_code == 200:
+            customers = search_resp.json().get("data", [])
+            if customers:
+                customer = customers[0]
+                customer_id = customer.get("id")
+                customer_name = customer.get("name", "Unknown Caller")
+                print(f"[Lead] Found customer: {customer_name} (ID: {customer_id})")
+
+                # Fetch locations for this customer via separate API call
+                print(f"[Lead] Fetching locations for customer {customer_id}...")
+                locations_url = f"https://api.servicetitan.io/crm/v2/tenant/{TENANT_ID}/locations"
+                locations_resp = requests.get(locations_url, headers=headers, params={"customerId": customer_id, "pageSize": 1})
+
+                if locations_resp.status_code == 200:
+                    locations = locations_resp.json().get("data", [])
+                    if locations:
+                        location_id = locations[0].get("id")
+                        print(f"[Lead] Found location: {location_id}")
+                    else:
+                        print("[Lead] Customer has no locations")
+                else:
+                    print(f"[Lead] Locations lookup failed: {locations_resp.status_code}")
+            else:
+                print("[Lead] No existing customer found, creating new customer...")
+
+                # Create new customer with "Unknown Caller" name
+                customer_payload = {
+                    "name": "Unknown Caller",
+                    "type": "Residential",
+                    "contacts": [
+                        {"type": "Phone", "value": cleaned_phone, "memo": "Unknown Caller"}
+                    ],
+                    "locations": [
+                        {
+                            "name": "Unknown Caller",
+                            "contacts": [
+                                {"type": "Phone", "value": cleaned_phone, "memo": "Unknown Caller"}
+                            ]
+                        }
+                    ]
+                }
+
+                print(f"[Lead] Creating customer: {json.dumps(customer_payload)}")
+                create_cust_url = f"https://api.servicetitan.io/crm/v2/tenant/{TENANT_ID}/customers"
+                create_cust_resp = requests.post(create_cust_url, headers=headers, json=customer_payload)
+
+                if create_cust_resp.status_code in (200, 201):
+                    cust_data = create_cust_resp.json()
+                    customer_id = cust_data.get("id")
+                    customer_name = cust_data.get("name", "Unknown Caller")
+                    # Get location from the created customer
+                    created_locations = cust_data.get("locations", [])
+                    if created_locations:
+                        location_id = created_locations[0].get("id")
+                    print(f"[Lead] Created new customer: {customer_name} (ID: {customer_id})")
+                else:
+                    print(f"[Lead] Failed to create customer: {create_cust_resp.status_code} - {create_cust_resp.text}")
+        else:
+            print(f"[Lead] Customer lookup failed: {search_resp.status_code}")
+
+    print(f"[Lead] Customer ID: {customer_id}")
+    print(f"[Lead] Location ID: {location_id}")
+
+    # Step 2: Use OpenAI to determine priority and follow-up timing
+    from datetime import timezone
+    priority = "Low"  # ServiceTitan only accepts "High" or "Low"
+    follow_up_days = 1
+    follow_up_date = (datetime.now(timezone.utc) + timedelta(days=1)).strftime("%Y-%m-%dT09:00:00Z")
+
+    try:
+        print(f"\n[Lead] Analyzing priority and follow-up with AI...")
+        from openai import OpenAI
+        client = OpenAI(api_key=OPENAI_API_KEY)
+
+        response = client.chat.completions.create(
+            model="gpt-4o-mini",
+            max_tokens=50,
+            temperature=0,
+            messages=[
+                {
+                    "role": "system",
+                    "content": """You are a plumbing business operations expert. Given a call type and summary, determine the priority and follow-up timing. Respond with ONLY this exact format, nothing else:
+PRIORITY:High
+FOLLOWUP_DAYS:1
+
+Priority options: High or Low (use High for urgent/emergency, Low for everything else)
+FOLLOWUP_DAYS options: 0 (today), 1 (tomorrow), 2, 3, 5, 7"""
+                },
+                {
+                    "role": "user",
+                    "content": f"Call type: {call_type}\nCall summary: {summary}\n\nWhat priority and follow-up days?"
+                }
+            ]
+        )
+
+        ai_response = response.choices[0].message.content.strip()
+        print(f"[Lead] AI response: {ai_response}")
+
+        # Parse the response
+        for line in ai_response.split("\n"):
+            line = line.strip()
+            if line.startswith("PRIORITY:"):
+                parsed_priority = line.replace("PRIORITY:", "").strip()
+                # ServiceTitan only accepts "High" or "Low" - map Medium to Low
+                if parsed_priority == "High":
+                    priority = "High"
+                else:
+                    priority = "Low"
+            elif line.startswith("FOLLOWUP_DAYS:"):
+                try:
+                    follow_up_days = int(line.replace("FOLLOWUP_DAYS:", "").strip())
+                except ValueError:
+                    pass
+
+        # Calculate follow_up_date based on follow_up_days
+        follow_up_date = (datetime.now(timezone.utc) + timedelta(days=follow_up_days)).strftime("%Y-%m-%dT09:00:00Z")
+
+        print(f"[Lead] AI Priority: {priority}")
+        print(f"[Lead] AI Follow-up: {follow_up_days} days from now ({follow_up_date})")
+
+    except Exception as e:
+        print(f"[Lead] AI analysis failed: {e}, using defaults")
+        print(f"[Lead] AI Priority: {priority} (default)")
+        print(f"[Lead] AI Follow-up: {follow_up_days} days from now ({follow_up_date}) (default)")
+
+    # Step 3: Create lead payload
+    lead_payload = {
+        "customerId": customer_id,
+        "locationId": location_id,
+        "summary": f"[{call_type.upper()}] {summary}",
+        "callReasonId": 92029507,
+        "campaignId": campaign_id,
+        "businessUnitId": business_unit_id,
+        "status": "Open",
+        "priority": priority,
+        "followUpDate": follow_up_date
+    }
+
+    print(f"\n[Lead] Creating lead...")
+    print(f"[Lead] Payload: {json.dumps(lead_payload, indent=2)}")
+
+    # Step 4: POST to leads endpoint
+    leads_url = f"https://api.servicetitan.io/crm/v2/tenant/{TENANT_ID}/leads"
+    resp = requests.post(leads_url, headers=headers, json=lead_payload)
+
+    print(f"[Lead] Response status: {resp.status_code}")
+    print(f"[Lead] Response: {resp.text}")
+
+    # If lead creation failed due to missing location, try creating a location first
+    if resp.status_code not in (200, 201) and customer_id and not location_id:
+        print("[Lead] Lead creation failed due to missing location, searching for address...")
+
+        customer_address = None
+
+        # 1. First try to get cached address from service area check (most recent/accurate)
+        cached_address = get_service_area_address(cleaned_phone)
+        if cached_address and cached_address.get("street"):
+            customer_address = {
+                "street": cached_address.get("street", ""),
+                "city": cached_address.get("city", ""),
+                "state": cached_address.get("state", DEFAULT_STATE),
+                "zip": cached_address.get("zip", ""),
+                "country": cached_address.get("country", DEFAULT_COUNTRY)
+            }
+            print(f"[Lead] Using cached address from service area check: {customer_address['street']}, {customer_address['city']}")
+
+        # 2. If no cached address, try to get from customer profile
+        if not customer_address:
+            try:
+                cust_url = f"https://api.servicetitan.io/crm/v2/tenant/{TENANT_ID}/customers/{customer_id}"
+                cust_resp = requests.get(cust_url, headers=headers)
+                if cust_resp.status_code == 200:
+                    cust_data = cust_resp.json()
+                    profile_address = cust_data.get("address")
+                    if profile_address and profile_address.get("street"):
+                        customer_address = profile_address
+                        print(f"[Lead] Using customer profile address: {customer_address.get('street', '')}, {customer_address.get('city', '')}")
+            except Exception as e:
+                print(f"[Lead] Could not fetch customer address: {e}")
+
+        # 3. If still no address, skip lead creation
+        if not customer_address or not customer_address.get("street"):
+            print(f"[Lead] SKIPPED: No address available for location creation")
+            print(f"[Lead] Manual follow-up needed for: {customer_name} ({cleaned_phone})")
+            print(f"[Lead] Call summary: {summary[:100]}...")
+            return None
+
+        location_payload = {
+            "customerId": customer_id,
+            "name": customer_name,
+            "address": customer_address,
+            "contacts": [
+                {"type": "Phone", "value": cleaned_phone, "memo": customer_name}
+            ] if cleaned_phone else []
+        }
+
+        print(f"[Lead] Creating location with address...")
+        print(f"[Lead] Location payload: {json.dumps(location_payload)}")
+        create_loc_url = f"https://api.servicetitan.io/crm/v2/tenant/{TENANT_ID}/locations"
+        create_loc_resp = requests.post(create_loc_url, headers=headers, json=location_payload)
+
+        if create_loc_resp.status_code in (200, 201):
+            loc_data = create_loc_resp.json()
+            location_id = loc_data.get("id")
+            print(f"[Lead] Created location: {location_id}")
+            print(f"[Lead] Location ID: {location_id}")
+
+            # Retry lead creation with the new location
+            lead_payload["locationId"] = location_id
+            print(f"[Lead] Retrying lead creation with location...")
+            resp = requests.post(leads_url, headers=headers, json=lead_payload)
+            print(f"[Lead] Response status: {resp.status_code}")
+            print(f"[Lead] Response: {resp.text}")
+        else:
+            print(f"[Lead] Failed to create location: {create_loc_resp.status_code} - {create_loc_resp.text}")
+
+    if resp.status_code in (200, 201):
+        lead_data = resp.json()
+        lead_id = lead_data.get("id")
+
+        print("\n" + "*" * 70)
+        print(f"[Lead] Created: {call_type} - {summary}")
+        print(f"[Lead] ID: {lead_id}")
+        print(f"[Lead] Customer: {customer_name}")
+        print("*" * 70 + "\n")
+
+        return lead_id
+    else:
+        print(f"\n[Lead] FAILED to create lead: {resp.text}")
+        return None
 
 
 def lookup_customer_by_phone(phone: str):

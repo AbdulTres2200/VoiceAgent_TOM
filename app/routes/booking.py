@@ -121,10 +121,20 @@ async def book_appointment(request: Request):
         business_unit_id = campaign_info.get("business_unit_id")
         print(f"[Booking] Found campaign: {campaign_info.get('campaign_name')} (ID: {campaign_id})")
 
-    # Override with zone-based business unit if provided (takes precedence)
+    # Override with zone-based business unit if provided by Retell (takes precedence)
     if zone_business_unit_id:
-        print(f"[Booking] Using zone-based business unit: {zone_business_unit_name} (ID: {zone_business_unit_id})")
+        print(f"[Booking] Using zone-based business unit (from Retell): {zone_business_unit_name} (ID: {zone_business_unit_id})")
         business_unit_id = int(zone_business_unit_id)
+    else:
+        # Check address-based cache (from check_service_area) - highest priority
+        from app.services.servicetitan import get_service_area_bu_by_address, parse_address
+        parsed_addr = parse_address(address)
+        cached_bu = get_service_area_bu_by_address(parsed_addr.get("street", ""), parsed_addr.get("zip", ""))
+        if cached_bu:
+            print(f"[Booking] Using zone-based business unit (from address cache): {cached_bu['business_unit_name']} (ID: {cached_bu['business_unit_id']})")
+            business_unit_id = cached_bu["business_unit_id"]
+            zone_business_unit_id = cached_bu["business_unit_id"]
+            zone_business_unit_name = cached_bu["business_unit_name"]
 
     # Print nicely formatted booking summary to console (wrapped in try-except to never block operation)
     try:

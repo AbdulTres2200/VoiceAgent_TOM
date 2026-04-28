@@ -42,6 +42,16 @@ JOB_CATEGORY_TO_FIELD = {
     "Well Pump": "Skill_Well_Pump",
 }
 
+# Maximum acceptable skill level by job category (lower = more skilled)
+# Complex jobs need skilled techs; simple jobs accept anyone competent
+JOB_CATEGORY_MAX_SKILL = {
+    "Sewers/Mainline": 2,   # Complex - need skill 1-2 only
+    "Gas Lines": 2,          # Complex/safety - need skill 1-2 only
+    "Water Heaters": 3,      # Normal - accept skill 1-3
+    "Well Pump": 3,          # Normal - accept skill 1-3
+    "Misc Plumbing": 4,      # Simple - accept skill 1-4
+}
+
 # Token cache
 _token_cache = {"access_token": None, "expires_at": 0}
 
@@ -342,25 +352,28 @@ def dispatch_technician(job_category, customer_address, is_emergency=False):
     if not candidates:
         return {"error": "no_match", "reason": "no_eligible_techs"}
 
-    # Sort by skill (1 = best, ascending) then by distance (ascending)
-    # Techs without distance go to the end
-    def sort_key(c):
-        dist = c["distance"] if c["distance"] is not None else float("inf")
-        return (c["skill"], dist)
+    # Get max acceptable skill for this job category
+    max_skill = JOB_CATEGORY_MAX_SKILL.get(job_category, 3)
 
-    candidates.sort(key=sort_key)
+    # For emergencies, require more skilled techs (lower max_skill)
+    if is_emergency and max_skill > 2:
+        max_skill = 2
+        print(f"[Dispatch] Emergency job - requiring skill 1-{max_skill}")
 
-    # Find the best skill rating among candidates
-    best_skill = candidates[0]["skill"]
+    # Filter to only technicians within acceptable skill range
+    qualified = [c for c in candidates if c["skill"] <= max_skill]
 
-    # Filter to only top-skilled technicians
-    top_skilled = [c for c in candidates if c["skill"] == best_skill]
+    print(f"[Dispatch] {len(qualified)} techs within skill threshold (1-{max_skill})")
 
-    # Among top-skilled, pick the closest one
-    if len(top_skilled) > 1:
-        top_skilled.sort(key=lambda c: c["distance"] if c["distance"] is not None else float("inf"))
+    # If no qualified techs, fall back to best available
+    if not qualified:
+        print(f"[Dispatch] No techs with skill 1-{max_skill}, falling back to best available")
+        qualified = candidates
 
-    chosen = top_skilled[0]
+    # Sort by distance (closest first) - skill threshold already applied
+    qualified.sort(key=lambda c: c["distance"] if c["distance"] is not None else float("inf"))
+
+    chosen = qualified[0]
 
     # Determine dispatch type based on skill rating
     # Skill 1-3 = auto dispatch, 4-5 = requires approval

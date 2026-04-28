@@ -9,6 +9,36 @@ import json
 load_dotenv()
 
 
+def get_dispatch_category(job_type_name):
+    """
+    Map ServiceTitan job type names to dispatch categories.
+    Returns one of: "Sewers/Mainline", "Water Heaters", "Misc Plumbing", "Gas Lines", "Well Pump"
+    """
+    if not job_type_name:
+        return "Misc Plumbing"
+
+    name_upper = job_type_name.upper()
+
+    # Gas line jobs - check first to avoid GAS1 matching S1
+    if "GAS" in name_upper:
+        return "Gas Lines"
+
+    # Water heater jobs
+    if "WH" in name_upper or "WATER HEATER" in name_upper:
+        return "Water Heaters"
+
+    # Well pump jobs
+    if "PUMP2" in name_upper or "WELL" in name_upper:
+        return "Well Pump"
+
+    # Main sewer/drain jobs - use word boundary to avoid matching GAS1
+    if name_upper.startswith("S1") or "MAIN LINE" in name_upper or "MAINLINE" in name_upper:
+        return "Sewers/Mainline"
+
+    # Default to misc plumbing (covers P1, P2, P3, S2, Pump1, etc.)
+    return "Misc Plumbing"
+
+
 def parse_address(address_string):
     """
     Parse a full address string into components using usaddress library.
@@ -571,7 +601,7 @@ def get_job_types_from_st():
 def detect_job_type(issue_description: str, customer_type: str = "Residential"):
     """
     Use OpenAI to detect the best job type for a given issue description.
-    Returns {job_type_id, job_type_name, priority}.
+    Returns {job_type_id, job_type_name, priority, job_category}.
 
     Args:
         issue_description: The customer's issue description
@@ -588,13 +618,15 @@ def detect_job_type(issue_description: str, customer_type: str = "Residential"):
         fallback = {
             "job_type_id": 1447573448,  # Update this if you have a commercial default
             "job_type_name": "CP2 Commercial Minor Plumbing",
-            "priority": "High"
+            "priority": "High",
+            "job_category": "Misc Plumbing"
         }
     else:
         fallback = {
             "job_type_id": 1447573448,
             "job_type_name": "P2 Minor Plumbing",
-            "priority": "High"
+            "priority": "High",
+            "job_category": "Misc Plumbing"
         }
 
     if not issue_description:
@@ -705,10 +737,11 @@ Reply with ONLY the code (e.g., WH1, S2, Pump1).{customer_type_note}"""
                 result = {
                     "job_type_id": jt["id"],
                     "job_type_name": jt["name"],
-                    "priority": jt["priority"]
+                    "priority": jt["priority"],
+                    "job_category": get_dispatch_category(jt["name"])
                 }
                 _job_type_detection_cache[cache_key] = result
-                print(f"[Job Type] Detected: {result['job_type_name']} (ID: {result['job_type_id']}) Priority: {result['priority']}")
+                print(f"[Job Type] Detected: {result['job_type_name']} (ID: {result['job_type_id']}) Priority: {result['priority']} Category: {result['job_category']}")
                 print("[Job Type] Method: AI exact match")
                 return result
 
@@ -721,10 +754,11 @@ Reply with ONLY the code (e.g., WH1, S2, Pump1).{customer_type_note}"""
                 result = {
                     "job_type_id": jt["id"],
                     "job_type_name": jt["name"],
-                    "priority": jt["priority"]
+                    "priority": jt["priority"],
+                    "job_category": get_dispatch_category(jt["name"])
                 }
                 _job_type_detection_cache[cache_key] = result
-                print(f"[Job Type] Detected: {result['job_type_name']} (ID: {result['job_type_id']}) Priority: {result['priority']}")
+                print(f"[Job Type] Detected: {result['job_type_name']} (ID: {result['job_type_id']}) Priority: {result['priority']} Category: {result['job_category']}")
                 print("[Job Type] Method: AI partial match")
                 return result
 
@@ -737,10 +771,11 @@ Reply with ONLY the code (e.g., WH1, S2, Pump1).{customer_type_note}"""
                 result = {
                     "job_type_id": jt["id"],
                     "job_type_name": jt["name"],
-                    "priority": jt["priority"]
+                    "priority": jt["priority"],
+                    "job_category": get_dispatch_category(jt["name"])
                 }
                 _job_type_detection_cache[cache_key] = result
-                print(f"[Job Type] Detected: {result['job_type_name']} (ID: {result['job_type_id']}) Priority: {result['priority']}")
+                print(f"[Job Type] Detected: {result['job_type_name']} (ID: {result['job_type_id']}) Priority: {result['priority']} Category: {result['job_category']}")
                 print("[Job Type] Method: AI summary match")
                 return result
 
@@ -1323,53 +1358,83 @@ def parse_appointment_time(appointment_time: str) -> dict:
         # Convert to UTC
         start_utc = start_eastern.astimezone(utc)
         end_utc = end_eastern.astimezone(utc)
+        local_time_display = f"{start_eastern.strftime('%a %b %d %I:%M %p')} - {end_eastern.strftime('%I:%M %p')} Eastern (ASAP)"
         print(f"[Scheduling] EMERGENCY detected -> {start_eastern.strftime('%Y-%m-%d %H:%M %Z')} to {end_eastern.strftime('%H:%M %Z')}")
         return {
             "start": start_utc.strftime("%Y-%m-%dT%H:%M:%SZ"),
             "end": end_utc.strftime("%Y-%m-%dT%H:%M:%SZ"),
-            "window": "emergency"
+            "window": "emergency",
+            "local_time": local_time_display
         }
 
     # Morning window 8-12 ET
     if "morning" in text or "8-12" in text or "8 to 12" in text or "8am" in text:
         start_eastern = base_day.replace(hour=8, minute=0, second=0, tzinfo=eastern)
         end_eastern = base_day.replace(hour=12, minute=0, second=0, tzinfo=eastern)
+
+        # If the window has already passed today, move to next day
+        if end_eastern <= now_eastern:
+            start_eastern += timedelta(days=1)
+            end_eastern += timedelta(days=1)
+            print(f"[Scheduling] Morning window passed, moving to next day: {start_eastern.date()}")
+
         # Convert to UTC
         start_utc = start_eastern.astimezone(utc)
         end_utc = end_eastern.astimezone(utc)
+        local_time_display = f"{start_eastern.strftime('%a %b %d')} 8:00 AM - 12:00 PM Eastern"
         print(f"[Scheduling] MORNING window -> {start_eastern.strftime('%Y-%m-%d %H:%M %Z')} to {end_eastern.strftime('%H:%M %Z')}")
         return {
             "start": start_utc.strftime("%Y-%m-%dT%H:%M:%SZ"),
             "end": end_utc.strftime("%Y-%m-%dT%H:%M:%SZ"),
-            "window": "morning 8-12"
+            "window": "morning 8-12",
+            "local_time": local_time_display
         }
 
     # Afternoon window 12-4 ET
     if "afternoon" in text or "12-4" in text or "12 to 4" in text or "12pm" in text:
         start_eastern = base_day.replace(hour=12, minute=0, second=0, tzinfo=eastern)
         end_eastern = base_day.replace(hour=16, minute=0, second=0, tzinfo=eastern)
+
+        # If the window has already passed today, move to next day
+        if end_eastern <= now_eastern:
+            start_eastern += timedelta(days=1)
+            end_eastern += timedelta(days=1)
+            print(f"[Scheduling] Afternoon window passed, moving to next day: {start_eastern.date()}")
+
         # Convert to UTC
         start_utc = start_eastern.astimezone(utc)
         end_utc = end_eastern.astimezone(utc)
+        local_time_display = f"{start_eastern.strftime('%a %b %d')} 12:00 PM - 4:00 PM Eastern"
         print(f"[Scheduling] AFTERNOON window -> {start_eastern.strftime('%Y-%m-%d %H:%M %Z')} to {end_eastern.strftime('%H:%M %Z')}")
         return {
             "start": start_utc.strftime("%Y-%m-%dT%H:%M:%SZ"),
             "end": end_utc.strftime("%Y-%m-%dT%H:%M:%SZ"),
-            "window": "afternoon 12-4"
+            "window": "afternoon 12-4",
+            "local_time": local_time_display
         }
 
     # Evening window 4-8 ET
     if "evening" in text or "4-8" in text or "4 to 8" in text or "4pm" in text:
         start_eastern = base_day.replace(hour=16, minute=0, second=0, tzinfo=eastern)
         end_eastern = base_day.replace(hour=20, minute=0, second=0, tzinfo=eastern)
+
+        # If the window has already passed today, move to next day
+        if end_eastern <= now_eastern:
+            start_eastern += timedelta(days=1)
+            end_eastern += timedelta(days=1)
+            print(f"[Scheduling] Evening window passed, moving to next day: {start_eastern.date()}")
+
         # Convert to UTC
         start_utc = start_eastern.astimezone(utc)
         end_utc = end_eastern.astimezone(utc)
+        local_time_display = f"{start_eastern.strftime('%a %b %d')} 4:00 PM - 8:00 PM Eastern"
+
         print(f"[Scheduling] EVENING window -> {start_eastern.strftime('%Y-%m-%d %H:%M %Z')} to {end_eastern.strftime('%H:%M %Z')}")
         return {
             "start": start_utc.strftime("%Y-%m-%dT%H:%M:%SZ"),
             "end": end_utc.strftime("%Y-%m-%dT%H:%M:%SZ"),
-            "window": "evening 4-8"
+            "window": "evening 4-8",
+            "local_time": local_time_display
         }
 
     # Fallback: next business day morning
@@ -1379,10 +1444,12 @@ def parse_appointment_time(appointment_time: str) -> dict:
     # Convert to UTC
     start_utc = start_eastern.astimezone(utc)
     end_utc = end_eastern.astimezone(utc)
+    local_time_display = f"{start_eastern.strftime('%a %b %d')} 8:00 AM - 12:00 PM Eastern"
     return {
         "start": start_utc.strftime("%Y-%m-%dT%H:%M:%SZ"),
         "end": end_utc.strftime("%Y-%m-%dT%H:%M:%SZ"),
-        "window": "morning 8-12 (default)"
+        "window": "morning 8-12 (default)",
+        "local_time": local_time_display
     }
 
 
@@ -1390,7 +1457,7 @@ def create_booking(customer_name, address, phone, email, issue_description,
                    appointment_time, appointment_start, appointment_end,
                    customer_type, is_homeowner=None, promotional_emails=None,
                    contact_preference=None, alternate_phone=None,
-                   campaign_id=None, business_unit_id=None):
+                   campaign_id=None, business_unit_id=None, is_emergency=None):
 
     token = get_access_token()
 
@@ -1402,8 +1469,23 @@ def create_booking(customer_name, address, phone, email, issue_description,
 
     print(f"[ST] Customer Type: {customer_type}")
 
-    # Parse address early so we can use it for cache lookups
-    parsed_addr = parse_address(address)
+    # Parse address with Google geocoding to get lat/lng for dispatch
+    from app.services.service_area import parse_address_google
+    import os
+    google_api_key = os.getenv("GOOGLE_MAPS_API_KEY")
+    geocoded = parse_address_google(address, google_api_key)
+
+    # Extract lat/lng for dispatch (may be None if geocoding failed)
+    customer_lat = geocoded.get("lat")
+    customer_lng = geocoded.get("lng")
+
+    # Use geocoded address or fall back to basic parsing
+    if geocoded.get("method") == "google" and geocoded.get("zip"):
+        parsed_addr = geocoded
+        print(f"[ST] Geocoded address: {geocoded.get('formatted_address')} (lat={customer_lat}, lng={customer_lng})")
+    else:
+        parsed_addr = parse_address(address)
+        print(f"[ST] Using fallback address parsing (no geocode)")
 
     # Track business unit source for logging
     bu_source = "provided" if business_unit_id else None
@@ -1519,17 +1601,25 @@ def create_booking(customer_name, address, phone, email, issue_description,
         parsed_start = appointment_start
         parsed_end = appointment_end
         scheduling_window = "provided"
+        local_time_display = None
         print(f"[ST] Using provided appointment times: {parsed_start} to {parsed_end}")
     else:
         time_result = parse_appointment_time(appointment_time)
         parsed_start = time_result["start"]
         parsed_end = time_result["end"]
         scheduling_window = time_result["window"]
+        local_time_display = time_result.get("local_time")
         print(f"[ST] Scheduling window: {scheduling_window}")
+        print(f"[ST] Local time: {local_time_display}")
         print(f"[ST] Parsed appointment times: {parsed_start} to {parsed_end}")
 
-    # Build special instructions with window info
-    special_instructions = f"{appointment_time} [{scheduling_window}]" if appointment_time else scheduling_window
+    # Build special instructions with local Eastern time for dispatcher clarity
+    if local_time_display:
+        special_instructions = f"ARRIVAL WINDOW: {local_time_display}"
+    elif appointment_time:
+        special_instructions = f"{appointment_time} [{scheduling_window}]"
+    else:
+        special_instructions = scheduling_window
 
     # Build custom fields for booking questions
     custom_fields = []
@@ -1594,9 +1684,89 @@ def create_booking(customer_name, address, phone, email, issue_description,
     
     job_data = r.json()
     job_id = job_data["id"]
+    first_appointment_id = job_data.get("firstAppointmentId")
     print(f"[ST] Job ID: {job_id}")
+    print(f"[ST] First Appointment ID: {first_appointment_id}")
 
-    # # Step 3 - Create Appointment
+    # Step 3 - Dispatch Technician
+    dispatch_result = None
+    try:
+        from app.services.dispatch import dispatch_technician
+
+        job_category = job_type_result.get("job_category", "Misc Plumbing")
+
+        # Use provided is_emergency, default to False if not specified
+        dispatch_emergency = is_emergency if is_emergency is not None else False
+
+        print(f"[ST] Dispatching technician for category: {job_category}, emergency: {dispatch_emergency}")
+
+        dispatch_result = dispatch_technician(
+            job_category=job_category,
+            customer_address={
+                "lat": customer_lat,
+                "lng": customer_lng,
+                "zip": parsed_addr.get("zip")
+            },
+            is_emergency=dispatch_emergency
+        )
+
+        if dispatch_result.get("error"):
+            print(f"[ST] Dispatch warning: {dispatch_result}")
+        else:
+            print(f"[ST] Dispatch success: {dispatch_result['tech_name']} "
+                  f"(skill={dispatch_result['skill_rating']}, "
+                  f"distance={dispatch_result.get('distance_miles')} mi, "
+                  f"auto_dispatch={dispatch_result['auto_dispatch']})")
+
+            # Post note with technician assignment for dispatcher
+            # (API auto-assign not available without SmartDispatch feature)
+            if first_appointment_id:
+                try:
+                    from app.services.servicetitan_notes import post_job_note
+
+                    tech_name = dispatch_result["tech_name"]
+                    skill = dispatch_result["skill_rating"]
+                    distance = dispatch_result.get("distance_miles", "N/A")
+                    job_category = job_type_result.get("job_category", "Unknown")
+
+                    if dispatch_result.get("auto_dispatch"):
+                        # Auto-dispatch: skill 1-3, ready to assign
+                        note_text = (
+                            f"🚀 ASSIGN TECHNICIAN\n\n"
+                            f"Technician: {tech_name}\n"
+                            f"Skill Rating: {skill}/5 for {job_category}\n"
+                            f"Distance: {distance} miles\n\n"
+                            f"This technician is recommended for immediate assignment."
+                        )
+                        print(f"[ST] Posting auto-dispatch note for tech {tech_name}")
+                    else:
+                        # Requires approval: skill 4-5
+                        note_text = (
+                            f"⚠️ DISPATCH PENDING APPROVAL\n\n"
+                            f"Recommended Technician: {tech_name}\n"
+                            f"Skill Rating: {skill}/5 for {job_category}\n"
+                            f"Distance: {distance} miles\n\n"
+                            f"This technician has a skill rating of {skill} (4-5 requires manager approval).\n"
+                            f"Please review and confirm dispatch or reassign to a more experienced technician."
+                        )
+                        print(f"[ST] Posting approval-required note for tech {tech_name}")
+
+                    if post_job_note(str(job_id), note_text, pin=True):
+                        print(f"[ST] Posted dispatch note to job {job_id}")
+                        dispatch_result["note_posted"] = True
+                    else:
+                        print(f"[ST] Failed to post dispatch note to job {job_id}")
+                        dispatch_result["note_posted"] = False
+
+                except Exception as note_err:
+                    print(f"[ST] Error posting dispatch note: {note_err}")
+                    dispatch_result["note_posted"] = False
+
+    except Exception as e:
+        print(f"[ST] Dispatch failed (non-blocking): {e}")
+        dispatch_result = {"error": "dispatch_exception", "message": str(e)}
+
+    # # Step 4 - Create Appointment (commented out)
     # print("[ST] Step 3 - Creating appointment...")
     # appointment_payload = {
     #     "jobId": job_id,
@@ -1619,12 +1789,55 @@ def create_booking(customer_name, address, phone, email, issue_description,
         return {"status": "error", "failed_step": 3, "step_name": "Create Appointment",
                 "error": r.text, "status_code": r.status_code, "job_id": job_id}
 
-    return {
+    result = {
         "status": "success",
         "message": f"Your appointment has been booked successfully. Your job number is {job_id}. We will reach out before arrival. Thank you for calling Mr. Rooter.",
         "job_id": job_id,
-        "customer_id": customer_id
+        "customer_id": customer_id,
+        "job_category": job_type_result.get("job_category", "Misc Plumbing")
     }
+
+    # Add dispatch info if available
+    if dispatch_result and not dispatch_result.get("error"):
+        result["dispatch"] = {
+            "tech_id": dispatch_result["tech_id"],
+            "tech_name": dispatch_result["tech_name"],
+            "skill_rating": dispatch_result["skill_rating"],
+            "distance_miles": dispatch_result.get("distance_miles"),
+            "auto_dispatch": dispatch_result["auto_dispatch"],
+            "requires_approval": dispatch_result["requires_approval"],
+            "note_posted": dispatch_result.get("note_posted", False)
+        }
+
+    elif dispatch_result:
+        result["dispatch"] = dispatch_result  # Contains error info
+
+        # Post note for no_match or dispatch error - needs manual dispatch
+        if dispatch_result.get("error"):
+            try:
+                from app.services.servicetitan_notes import post_job_note
+
+                error_reason = dispatch_result.get("reason", dispatch_result.get("message", "unknown"))
+                note_text = (
+                    f"⚠️ MANUAL DISPATCH REQUIRED\n\n"
+                    f"Auto-dispatch could not find an available technician.\n"
+                    f"Reason: {error_reason}\n\n"
+                    f"Job Category: {job_type_result.get('job_category', 'Unknown')}\n"
+                    f"Customer Zip: {parsed_addr.get('zip', 'Unknown')}\n\n"
+                    f"Please manually assign a technician to this job."
+                )
+
+                if post_job_note(str(job_id), note_text, pin=True):
+                    print(f"[ST] Posted manual dispatch note to job {job_id}")
+                    result["dispatch"]["manual_dispatch_note_posted"] = True
+                else:
+                    print(f"[ST] Failed to post manual dispatch note to job {job_id}")
+                    result["dispatch"]["manual_dispatch_note_posted"] = False
+
+            except Exception as e:
+                print(f"[ST] Error posting manual dispatch note: {e}")
+
+    return result
 
 
 def create_lead(call_type: str, summary: str, from_number: str, campaign_id: int, business_unit_id: int):

@@ -101,6 +101,8 @@ async def book_appointment(request: Request):
     is_homeowner = args.get('is_homeowner') or args.get('owns_home') or "yes"
     promotional_emails = args.get('promotional_emails') or "yes"
     contact_preference = args.get('contact_preference', "Phone")
+    # is_emergency defaults to False if not provided
+    is_emergency = args.get('is_emergency', False)
 
     # Get to_number from Retell (passed as dynamic variable from inbound webhook)
     to_number = args.get('to_number') or data.get('to_number')
@@ -183,7 +185,8 @@ async def book_appointment(request: Request):
         contact_preference=contact_preference,
         alternate_phone=alternate_phone,
         campaign_id=campaign_id,
-        business_unit_id=business_unit_id
+        business_unit_id=business_unit_id,
+        is_emergency=is_emergency
     )
 
     # Create confirmation message for Retell to read back

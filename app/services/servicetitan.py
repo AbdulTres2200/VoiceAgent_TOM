@@ -2,11 +2,42 @@ import os
 import time
 import requests
 import usaddress
+import smtplib
+from email.mime.text import MIMEText
+from email.mime.multipart import MIMEMultipart
 from datetime import datetime, timedelta
 from dotenv import load_dotenv
 import json
 
 load_dotenv()
+
+# Excavation job type IDs - these require special 3-job workflow
+EXCAVATION_JOB_TYPE_IDS = [
+    1447569631,  # EXP
+    1447586371,  # EXS
+    1447570137,  # EXPB
+    1447570138,  # EXPL
+    1447571975,  # EXR Excavation ReEval
+    1447569360,  # EXF FINAL PAYMENT
+    1454280716,  # EX2
+    1447570767,  # EXCU
+    1447570002,  # CE
+]
+
+# Excavation-specific job type IDs for the 3-job workflow
+EXCAVATION_JET_JOB_TYPE_ID = 1447569500      # JET1
+EXCAVATION_REEVAL_JOB_TYPE_ID = 1447571975   # EXR Excavation ReEval
+EXCAVATION_FINAL_JOB_TYPE_ID = 1447569360    # EXF FINAL PAYMENT
+
+# Team emails for excavation notifications
+EXCAVATION_TEAM_EMAILS = [
+    "mrr043@gmail.com",  # Tim Boyle
+    # Add more team members as needed
+]
+
+# Email credentials (loaded from .env)
+SARAH_EMAIL = os.getenv("SARAH_EMAIL")
+SARAH_EMAIL_PASSWORD = os.getenv("SARAH_EMAIL_PASSWORD")
 
 
 def get_dispatch_category(job_type_name):
@@ -1462,6 +1493,193 @@ def parse_appointment_time(appointment_time: str) -> dict:
     }
 
 
+def create_excavation_jobs(customer_id, location_id, summary, campaign_id, business_unit_id, appointment_time):
+    """
+    Create 3 jobs for excavation work in ServiceTitan:
+    1. JET job (jetting/initial assessment)
+    2. Re-evaluate job
+    3. Final Payment job
+
+    Also sends email notification to excavation team.
+
+    Returns dict with status and all 3 job IDs.
+    """
+    print("\n" + "=" * 70)
+    print("EXCAVATION JOB CREATION")
+    print("=" * 70)
+
+    token = get_access_token()
+    headers = {
+        "Authorization": f"Bearer {token}",
+        "ST-App-Key": APP_KEY,
+        "Content-Type": "application/json"
+    }
+
+    # Parse appointment time
+    time_result = parse_appointment_time(appointment_time)
+    start_time = time_result["start"]
+    end_time = time_result["end"]
+    local_time_display = time_result.get("local_time", appointment_time)
+
+    print(f"[Excavation] Customer ID: {customer_id}")
+    print(f"[Excavation] Location ID: {location_id}")
+    print(f"[Excavation] Summary: {summary}")
+    print(f"[Excavation] Appointment: {local_time_display}")
+
+    job_ids = {}
+
+    # Job 1 - JET
+    print("\n[Excavation] Creating Job 1 - JET...")
+    jet_payload = {
+        "customerId": customer_id,
+        "locationId": location_id,
+        "summary": f"JET - {summary}",
+        "jobTypeId": EXCAVATION_JET_JOB_TYPE_ID,
+        "businessUnitId": business_unit_id,
+        "campaignId": campaign_id,
+        "priority": "Urgent",
+        "appointments": [{
+            "start": start_time,
+            "end": end_time,
+            "specialInstructions": f"EXCAVATION JOB 1/3 - JET | {appointment_time}"
+        }]
+    }
+
+    r = requests.post(
+        f"https://api.servicetitan.io/jpm/v2/tenant/{TENANT_ID}/jobs",
+        headers=headers,
+        json=jet_payload
+    )
+
+    if r.status_code in (200, 201):
+        job_ids["jet"] = r.json().get("id")
+        print(f"[Excavation] Job 1 (JET) created: {job_ids['jet']}")
+    else:
+        print(f"[Excavation] Job 1 (JET) FAILED: {r.status_code} - {r.text[:200]}")
+        return {"status": "error", "error": f"JET job creation failed: {r.text}"}
+
+    # Job 2 - Re-evaluate
+    print("\n[Excavation] Creating Job 2 - Re-evaluate...")
+    reeval_payload = {
+        "customerId": customer_id,
+        "locationId": location_id,
+        "summary": f"RE-EVALUATE - {summary}",
+        "jobTypeId": EXCAVATION_REEVAL_JOB_TYPE_ID,
+        "businessUnitId": business_unit_id,
+        "campaignId": campaign_id,
+        "priority": "Normal",
+        "appointments": [{
+            "start": start_time,
+            "end": end_time,
+            "specialInstructions": f"EXCAVATION JOB 2/3 - RE-EVALUATE | {appointment_time}"
+        }]
+    }
+
+    r = requests.post(
+        f"https://api.servicetitan.io/jpm/v2/tenant/{TENANT_ID}/jobs",
+        headers=headers,
+        json=reeval_payload
+    )
+
+    if r.status_code in (200, 201):
+        job_ids["reeval"] = r.json().get("id")
+        print(f"[Excavation] Job 2 (Re-evaluate) created: {job_ids['reeval']}")
+    else:
+        print(f"[Excavation] Job 2 (Re-evaluate) FAILED: {r.status_code} - {r.text[:200]}")
+        return {"status": "error", "error": f"Re-evaluate job creation failed: {r.text}"}
+
+    # Job 3 - Final Payment
+    print("\n[Excavation] Creating Job 3 - Final Payment...")
+    final_payload = {
+        "customerId": customer_id,
+        "locationId": location_id,
+        "summary": f"FINAL PAYMENT - {summary}",
+        "jobTypeId": EXCAVATION_FINAL_JOB_TYPE_ID,
+        "businessUnitId": business_unit_id,
+        "campaignId": campaign_id,
+        "priority": "Low",
+        "appointments": [{
+            "start": start_time,
+            "end": end_time,
+            "specialInstructions": f"EXCAVATION JOB 3/3 - FINAL PAYMENT | {appointment_time}"
+        }]
+    }
+
+    r = requests.post(
+        f"https://api.servicetitan.io/jpm/v2/tenant/{TENANT_ID}/jobs",
+        headers=headers,
+        json=final_payload
+    )
+
+    if r.status_code in (200, 201):
+        job_ids["final"] = r.json().get("id")
+        print(f"[Excavation] Job 3 (Final Payment) created: {job_ids['final']}")
+    else:
+        print(f"[Excavation] Job 3 (Final Payment) FAILED: {r.status_code} - {r.text[:200]}")
+        return {"status": "error", "error": f"Final Payment job creation failed: {r.text}"}
+
+    # Send email notification to excavation team
+    print("\n[Excavation] Sending email notification to team...")
+    emails_sent = 0
+
+    if SARAH_EMAIL and SARAH_EMAIL_PASSWORD and EXCAVATION_TEAM_EMAILS:
+        try:
+            subject = f"New Excavation Job Booked - {summary[:50]}"
+            body = f"""New Excavation Job has been booked through Sarah AI.
+
+CUSTOMER DETAILS:
+Customer ID: {customer_id}
+Issue: {summary}
+Appointment: {appointment_time}
+
+JOBS CREATED IN SERVICETITAN:
+1. JET Job #{job_ids['jet']}
+2. Re-Evaluate Job #{job_ids['reeval']}
+3. Final Payment Job #{job_ids['final']}
+
+Please log into ServiceTitan to view and assign these jobs.
+
+- Sarah AI Dispatch System
+Mr. Rooter Plumbing
+"""
+
+            msg = MIMEMultipart()
+            msg['From'] = SARAH_EMAIL
+            msg['To'] = ", ".join(EXCAVATION_TEAM_EMAILS)
+            msg['Subject'] = subject
+            msg.attach(MIMEText(body, 'plain'))
+
+            with smtplib.SMTP('smtp.gmail.com', 587) as server:
+                server.starttls()
+                server.login(SARAH_EMAIL, SARAH_EMAIL_PASSWORD)
+                server.sendmail(SARAH_EMAIL, EXCAVATION_TEAM_EMAILS, msg.as_string())
+                emails_sent = len(EXCAVATION_TEAM_EMAILS)
+
+            print(f"[Excavation] Email sent to {emails_sent} team members")
+
+        except Exception as e:
+            print(f"[Excavation] Email failed: {e}")
+    else:
+        print("[Excavation] Email not configured (missing SARAH_EMAIL or SARAH_EMAIL_PASSWORD)")
+
+    print("\n" + "=" * 70)
+    print("EXCAVATION JOB CREATION COMPLETE")
+    print(f"  JET Job: {job_ids['jet']}")
+    print(f"  Re-evaluate Job: {job_ids['reeval']}")
+    print(f"  Final Payment Job: {job_ids['final']}")
+    print(f"  Emails sent: {emails_sent}")
+    print("=" * 70 + "\n")
+
+    return {
+        "status": "success",
+        "jet_job_id": job_ids["jet"],
+        "reeval_job_id": job_ids["reeval"],
+        "final_payment_job_id": job_ids["final"],
+        "emails_sent": emails_sent,
+        "message": f"Excavation jobs created: JET #{job_ids['jet']}, Re-eval #{job_ids['reeval']}, Final #{job_ids['final']}"
+    }
+
+
 def create_booking(customer_name, address, phone, email, issue_description,
                    appointment_time, appointment_start, appointment_end,
                    customer_type, is_homeowner=None, promotional_emails=None,
@@ -1602,7 +1820,23 @@ def create_booking(customer_name, address, phone, email, issue_description,
     location_id = customer_data["locations"][0]["id"]
     print(f"[ST] Customer ID: {customer_id}, Location ID: {location_id}")
 
-    # Step 2 - Create Job
+    # Check if this is an excavation job type - requires special 3-job workflow
+    if detected_job_type_id in EXCAVATION_JOB_TYPE_IDS:
+        print(f"[ST] Excavation job type detected (ID: {detected_job_type_id}) - using excavation workflow")
+        excavation_result = create_excavation_jobs(
+            customer_id=customer_id,
+            location_id=location_id,
+            summary=issue_description,
+            campaign_id=campaign_id,
+            business_unit_id=business_unit_id,
+            appointment_time=appointment_time
+        )
+        # Add customer info to result
+        excavation_result["customer_id"] = customer_id
+        excavation_result["location_id"] = location_id
+        return excavation_result
+
+    # Step 2 - Create Job (normal non-excavation workflow)
     print("[ST] Step 2 - Creating job...")
 
     # Parse appointment time - use provided start/end or parse from natural language

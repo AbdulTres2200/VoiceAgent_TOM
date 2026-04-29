@@ -6,7 +6,7 @@ from app.webhooks import retell_webhook
 from app.webhooks.retell_webhook import is_lead_already_created, mark_lead_created
 from app.services.retell import get_job_id_for_call
 from app.services.servicetitan_notes import post_job_note
-from app.services.servicetitan import test_connection, lookup_customer_by_phone, explore_account, lookup_by_address, fetch_account_config, get_campaign_from_call, get_campaign_details, get_latest_call, get_call_details, test_telecom, get_live_call_campaign, get_zones, get_job_types, get_job_types_from_st, detect_job_type, store_live_call_info, parse_appointment_time, get_business_unit_by_zone, get_business_units_from_st, store_service_area_business_unit, store_service_area_address, store_service_area_bu_by_address, create_lead, get_access_token, TENANT_ID, APP_KEY, clean_phone
+from app.services.servicetitan import test_connection, lookup_customer_by_phone, explore_account, lookup_by_address, fetch_account_config, get_campaign_from_call, get_campaign_details, get_latest_call, get_call_details, test_telecom, get_live_call_campaign, get_zones, get_job_types, get_job_types_from_st, detect_job_type, store_live_call_info, parse_appointment_time, get_business_unit_by_zone, get_business_units_from_st, store_service_area_business_unit, store_service_area_address, store_service_area_bu_by_address, create_lead, get_access_token, TENANT_ID, APP_KEY, clean_phone, create_excavation_jobs
 from app.services.service_area import check_service_area, get_service_area_zips, preload_service_area_cache
 
 load_dotenv()
@@ -1053,3 +1053,150 @@ Recording: {recording_url}
     print("\n")
 
     return {"status": "ok"}
+
+
+@app.get("/test-technicians")
+async def test_technicians():
+    """
+    Test endpoint to fetch both employees and technicians from ServiceTitan.
+    Returns full details including id, name, roles, skills, custom fields.
+    """
+    import requests
+    import json
+
+    token = get_access_token()
+    headers = {
+        "Authorization": f"Bearer {token}",
+        "ST-App-Key": APP_KEY,
+        "Content-Type": "application/json"
+    }
+
+    results = {}
+
+    # 1. Fetch Employees
+    print("\n" + "=" * 70)
+    print("1. EMPLOYEES")
+    print("=" * 70)
+
+    employees_url = f"https://api.servicetitan.io/settings/v2/tenant/{TENANT_ID}/employees"
+    all_employees = []
+    page = 1
+
+    while True:
+        params = {"pageSize": 100, "active": "true", "page": page}
+        print(f"  GET {employees_url} (page {page})")
+        resp = requests.get(employees_url, headers=headers, params=params)
+        print(f"  Status: {resp.status_code}")
+
+        if resp.status_code != 200:
+            print(f"  Error: {resp.text[:500]}")
+            break
+
+        data = resp.json().get("data", [])
+        if not data:
+            break
+
+        for emp in data:
+            employee_info = {
+                "id": emp.get("id"),
+                "name": emp.get("name"),
+                "role": emp.get("role"),
+                "roleIds": emp.get("roleIds", []),
+                "email": emp.get("email"),
+                "phoneNumber": emp.get("phoneNumber"),
+                "active": emp.get("active"),
+                "customFields": emp.get("customFields", [])
+            }
+            all_employees.append(employee_info)
+            print(f"    - {emp.get('name')} (ID: {emp.get('id')}, Role: {emp.get('role')})")
+
+        if len(data) < 100:
+            break
+        page += 1
+
+    results["employees"] = {
+        "count": len(all_employees),
+        "data": all_employees
+    }
+
+    # 2. Fetch Technicians
+    print("\n" + "=" * 70)
+    print("2. TECHNICIANS")
+    print("=" * 70)
+
+    technicians_url = f"https://api.servicetitan.io/settings/v2/tenant/{TENANT_ID}/technicians"
+    all_technicians = []
+    page = 1
+
+    while True:
+        params = {"pageSize": 100, "active": "true", "page": page}
+        print(f"  GET {technicians_url} (page {page})")
+        resp = requests.get(technicians_url, headers=headers, params=params)
+        print(f"  Status: {resp.status_code}")
+
+        if resp.status_code != 200:
+            print(f"  Error: {resp.text[:500]}")
+            break
+
+        data = resp.json().get("data", [])
+        if not data:
+            break
+
+        for tech in data:
+            # Extract custom fields (skills)
+            custom_fields = {}
+            for cf in tech.get("customFields", []):
+                cf_name = cf.get("name", f"typeId_{cf.get('typeId')}")
+                custom_fields[cf_name] = cf.get("value")
+
+            tech_info = {
+                "id": tech.get("id"),
+                "name": tech.get("name"),
+                "status": tech.get("status"),
+                "active": tech.get("active"),
+                "zoneIds": tech.get("zoneIds", []),
+                "businessUnitId": tech.get("businessUnitId"),
+                "location": tech.get("location"),
+                "customFields": custom_fields,
+                "rawCustomFields": tech.get("customFields", [])
+            }
+            all_technicians.append(tech_info)
+
+            # Print summary
+            skills_str = ", ".join([f"{k}={v}" for k, v in custom_fields.items() if "Skill" in k])
+            print(f"    - {tech.get('name')} (ID: {tech.get('id')}, Status: {tech.get('status')})")
+            if skills_str:
+                print(f"      Skills: {skills_str}")
+
+        if len(data) < 100:
+            break
+        page += 1
+
+    results["technicians"] = {
+        "count": len(all_technicians),
+        "data": all_technicians
+    }
+
+    print("\n" + "=" * 70)
+    print(f"SUMMARY: {len(all_employees)} employees, {len(all_technicians)} technicians")
+    print("=" * 70 + "\n")
+
+    return results
+
+
+@app.get("/test-excavation")
+async def test_excavation():
+    """
+    Test excavation job creation workflow.
+    Creates 3 jobs (JET, Re-evaluate, Final Payment) and sends email notification.
+    Uses existing test customer.
+    """
+    result = create_excavation_jobs(
+        customer_id=1811510751,  # Existing test customer
+        location_id=1811510759,
+        summary="Excavation needed - pipe burst outside",
+        campaign_id=1410706053,
+        business_unit_id=1239,
+        appointment_time="morning window 8-12"
+    )
+    return result

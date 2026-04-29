@@ -277,6 +277,12 @@ async def retell_webhook(request: Request):
         if not business_unit_id or business_unit_id == 1239:
             business_unit_id = stored_data.get("business_unit_id", 1239)
 
+        # Also check stored data from call_ended event for job_id
+        if not job_id:
+            job_id = stored_data.get("job_id")
+            if job_id:
+                print(f"║  Found job_id from stored call data: {job_id:<24} ║")
+
         duration_seconds = (duration_ms // 1000) if duration_ms else 0
         print(f"║  From: {from_number:<53} ║")
         print(f"║  Duration: {duration_seconds}s{' ':<48}║")
@@ -383,11 +389,35 @@ Recording: {recording_url}
         action_result = "None"
 
         if booking_made == "yes":
-            # Search for recent job
+            # Final check: try mapping one more time (in case booking completed after initial check)
+            if not job_id and call_id != "Unknown":
+                job_id = get_job_id_for_call(call_id)
+                if job_id:
+                    print(f"║  Found job_id from mapping (retry): {job_id:<24} ║")
+                    # Post transcript to the job
+                    note_text = (
+                        f"📋 Retell.ai Call Transcript & Summary\n\n"
+                        f"── Summary ──\n"
+                        f"{call_summary or 'No summary available'}\n\n"
+                        f"── Full Transcript ──\n"
+                        f"{transcript or 'No transcript available'}"
+                    )
+                    success = await post_call_note_to_job(job_id, note_text)
+                    call_store[call_id]["job_id"] = job_id
+                    call_store[call_id]["call_analyzed_note_posted"] = success
+                    action_result = f"Job {job_id}"
+                    print(f"║  Action: Posted transcript to job {job_id:<25} ║")
+                    print(f"╠══════════════════════════════════════════════════════════════╣")
+                    print(f"║  RESULT: {action_result:<51} ║")
+                    print("╚══════════════════════════════════════════════════════════════╝\n")
+                    return {"status": "ok"}
+
+            # Fallback: Search for recent job by phone (less reliable for shared numbers)
             jobs_url = f"https://api.servicetitan.io/jpm/v2/tenant/{TENANT_ID}/jobs"
             params = {"pageSize": 5, "orderBy": "Id", "orderByDirection": "desc"}
             if cleaned_from:
                 params["phone"] = cleaned_from
+                print(f"║  Fallback: Searching jobs by phone {cleaned_from:<24} ║")
 
             jobs_resp = requests.get(jobs_url, headers=headers, params=params)
             found_job_id = None

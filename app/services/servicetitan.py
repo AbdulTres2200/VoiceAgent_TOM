@@ -1899,7 +1899,8 @@ def create_booking(customer_name, address, phone, email, issue_description,
                    appointment_time, appointment_start, appointment_end,
                    customer_type, is_homeowner=None, promotional_emails=None,
                    contact_preference=None, alternate_phone=None,
-                   campaign_id=None, business_unit_id=None, is_emergency=None):
+                   campaign_id=None, business_unit_id=None, is_emergency=None,
+                   is_excavation=None):
 
     token = get_access_token()
 
@@ -1974,10 +1975,25 @@ def create_booking(customer_name, address, phone, email, issue_description,
     print(f"[ST] Final campaign_id: {campaign_id}")
     print(f"[ST] Final business_unit_id: {business_unit_id} (source: {bu_source})")
 
-    # Detect job type from issue description using AI (pass customer_type for commercial preference)
-    job_type_result = detect_job_type(issue_description, customer_type)
-    detected_job_type_id = job_type_result["job_type_id"]
-    detected_priority = job_type_result["priority"]
+    # Normalize is_excavation parameter (can be bool or string)
+    is_excavation_bool = False
+    if is_excavation is not None:
+        if isinstance(is_excavation, bool):
+            is_excavation_bool = is_excavation
+        elif isinstance(is_excavation, str):
+            is_excavation_bool = is_excavation.lower() in ("true", "yes", "1")
+
+    # If is_excavation is explicitly true, skip job type detection
+    if is_excavation_bool:
+        print(f"[ST] is_excavation=True - skipping job type detection, using excavation workflow")
+        job_type_result = {"job_type_id": EXCAVATION_JOB_TYPE_IDS[0], "priority": "Urgent", "job_category": "Excavation"}
+        detected_job_type_id = job_type_result["job_type_id"]
+        detected_priority = job_type_result["priority"]
+    else:
+        # Detect job type from issue description using AI (pass customer_type for commercial preference)
+        job_type_result = detect_job_type(issue_description, customer_type)
+        detected_job_type_id = job_type_result["job_type_id"]
+        detected_priority = job_type_result["priority"]
     print(f"[ST] Using job_type_id: {detected_job_type_id}, priority: {detected_priority}")
 
     headers = {

@@ -1,12 +1,13 @@
 import os
 from fastapi import FastAPI, Request
+from fastapi.middleware.cors import CORSMiddleware
 from dotenv import load_dotenv
 from app.routes import booking
 from app.webhooks import retell_webhook
 from app.webhooks.retell_webhook import is_lead_already_created, mark_lead_created
 from app.services.retell import get_job_id_for_call
 from app.services.servicetitan_notes import post_job_note
-from app.services.servicetitan import test_connection, lookup_customer_by_phone, explore_account, lookup_by_address, fetch_account_config, get_campaign_from_call, get_campaign_details, get_latest_call, get_call_details, test_telecom, get_live_call_campaign, get_zones, get_job_types, get_job_types_from_st, detect_job_type, store_live_call_info, parse_appointment_time, get_business_unit_by_zone, get_business_units_from_st, store_service_area_business_unit, store_service_area_address, store_service_area_bu_by_address, create_lead, get_access_token, TENANT_ID, APP_KEY, clean_phone, create_excavation_jobs
+from app.services.servicetitan import test_connection, lookup_customer_by_phone, explore_account, lookup_by_address, fetch_account_config, get_campaign_from_call, get_campaign_details, get_latest_call, get_call_details, test_telecom, get_live_call_campaign, get_zones, get_job_types, get_job_types_from_st, detect_job_type, store_live_call_info, parse_appointment_time, get_business_unit_by_zone, get_business_units_from_st, store_service_area_business_unit, store_service_area_address, store_service_area_bu_by_address, create_lead, get_access_token, TENANT_ID, APP_KEY, clean_phone, create_excavation_jobs, EXCAVATOR_EMAILS_BY_ID
 from app.services.service_area import check_service_area, get_service_area_zips, preload_service_area_cache
 
 load_dotenv()
@@ -18,6 +19,14 @@ app = FastAPI(
     title="ServiceTitan Voice Agent",
     description="Retell AI Integration for ServiceTitan",
     version="1.0.0"
+)
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
 )
 
 # Include routers
@@ -1200,3 +1209,514 @@ async def test_excavation():
         appointment_time="morning window 8-12"
     )
     return result
+
+
+# Custom field type IDs for technicians
+TECH_FIELD_IDS = {
+    "Dispatchable": 1812958436,
+    "Skill_Sewers_Mainline": 1812962532,
+    "Skill_Water_Heaters": 1812948478,
+    "Skill_Misc_Plumbing": 1812962533,
+    "Skill_Gas_Lines": 1812961639,
+    "Skill_Well_Pump": 1812943717,
+}
+
+# Employee cache (5 minute TTL) for email/phone lookup
+import time as _time
+_employee_cache = {"data": {}, "expires_at": 0}
+_EMPLOYEE_CACHE_TTL = 300  # 5 minutes
+
+
+def _get_employees_cached():
+    """Fetch employees from ST with 5-minute cache. Returns dict keyed by name."""
+    import requests
+    current_time = _time.time()
+
+    if _employee_cache["data"] and current_time < _employee_cache["expires_at"]:
+        return _employee_cache["data"]
+
+    print("[API] Fetching employees from ServiceTitan...")
+    token = get_access_token()
+    headers = {
+        "Authorization": f"Bearer {token}",
+        "ST-App-Key": APP_KEY,
+        "Content-Type": "application/json"
+    }
+
+    employees_by_name = {}
+    page = 1
+
+    while True:
+        url = f"https://api.servicetitan.io/settings/v2/tenant/{TENANT_ID}/employees"
+        params = {"pageSize": 200, "page": page, "active": "true"}
+        resp = requests.get(url, headers=headers, params=params)
+
+        if resp.status_code != 200:
+            print(f"[API] Failed to fetch employees: {resp.status_code}")
+            break
+
+        data = resp.json().get("data", [])
+        if not data:
+            break
+
+        for emp in data:
+            name = emp.get("name", "").strip()
+            if name:
+                employees_by_name[name] = {
+                    "email": emp.get("email"),
+                    "phoneNumber": emp.get("phoneNumber")
+                }
+
+        if len(data) < 200:
+            break
+        page += 1
+
+    _employee_cache["data"] = employees_by_name
+    _employee_cache["expires_at"] = current_time + _EMPLOYEE_CACHE_TTL
+    print(f"[API] Cached {len(employees_by_name)} employees for 5 minutes")
+    if employees_by_name:
+        sample = list(employees_by_name.keys())[:3]
+        print(f"[API] Sample employee names: {sample}")
+
+    return employees_by_name
+
+
+@app.get("/api/debug/employees")
+async def debug_employees():
+    """Debug endpoint to see employee data."""
+    employees = _get_employees_cached()
+    return {
+        "count": len(employees),
+        "sample_names": list(employees.keys())[:20],
+        "sample_data": {k: employees[k] for k in list(employees.keys())[:5]}
+    }
+
+
+@app.get("/api/debug/technician-raw")
+async def debug_technician_raw():
+    """Debug endpoint to see raw technician data from ST."""
+    import requests
+    token = get_access_token()
+    headers = {
+        "Authorization": f"Bearer {token}",
+        "ST-App-Key": APP_KEY,
+        "Content-Type": "application/json"
+    }
+    url = f"https://api.servicetitan.io/settings/v2/tenant/{TENANT_ID}/technicians"
+    resp = requests.get(url, headers=headers, params={"pageSize": 2})
+    if resp.status_code == 200:
+        data = resp.json().get("data", [])
+        return {"raw_technicians": data}
+    return {"error": resp.status_code, "text": resp.text[:500]}
+
+
+@app.get("/api/technicians")
+async def get_technicians():
+    """
+    Fetch all technicians from ServiceTitan with email/phone from employees.
+    Returns id, name, email, phone, status, zoneIds, businessUnitId, location, and all skill custom fields.
+    """
+    import requests
+
+    token = get_access_token()
+    headers = {
+        "Authorization": f"Bearer {token}",
+        "ST-App-Key": APP_KEY,
+        "Content-Type": "application/json"
+    }
+
+    print("\n" + "=" * 70)
+    print("FETCHING TECHNICIANS")
+    print("=" * 70)
+
+    all_technicians = []
+    page = 1
+
+    while True:
+        url = f"https://api.servicetitan.io/settings/v2/tenant/{TENANT_ID}/technicians"
+        params = {"pageSize": 100, "page": page}
+        print(f"  GET {url} (page {page})")
+        resp = requests.get(url, headers=headers, params=params)
+
+        if resp.status_code != 200:
+            print(f"  Error: {resp.status_code} - {resp.text[:200]}")
+            return {"error": f"Failed to fetch technicians: {resp.status_code}"}
+
+        data = resp.json().get("data", [])
+        if not data:
+            break
+
+        for tech in data:
+            # Extract custom fields into readable format
+            skills = {}
+            raw_custom_fields = {}
+            for cf in tech.get("customFields", []):
+                cf_name = cf.get("name", "")
+                skills[cf_name] = cf.get("value")
+                raw_custom_fields[cf_name] = cf.get("typeId")
+
+            tech_info = {
+                "id": tech.get("id"),
+                "name": tech.get("name", ""),
+                "email": tech.get("email"),  # Direct from technician record
+                "phone": tech.get("phoneNumber"),  # Direct from technician record
+                "status": tech.get("status"),
+                "active": tech.get("active"),
+                "zoneIds": tech.get("zoneIds", []),
+                "businessUnitId": tech.get("businessUnitId"),
+                "location": tech.get("location"),
+                "skills": skills,
+                "rawCustomFieldTypeIds": raw_custom_fields
+            }
+            all_technicians.append(tech_info)
+
+        if len(data) < 100:
+            break
+        page += 1
+
+    print(f"  Found {len(all_technicians)} technicians total")
+
+    # Filter to only active + dispatchable technicians
+    filtered = [t for t in all_technicians if t["active"] and t["skills"].get("Dispatchable") == "YES"]
+    print(f"  Returning {len(filtered)} active dispatchable technicians")
+    print("=" * 70 + "\n")
+
+    return {
+        "count": len(filtered),
+        "technicians": filtered
+    }
+
+
+@app.put("/api/technicians/{technician_id}")
+async def update_technician(technician_id: int, request: Request):
+    """
+    Update a technician's fields in ServiceTitan.
+
+    Accepts JSON body with any of:
+    {
+        "name": string,
+        "email": string,
+        "phone": string,
+        "business_unit_id": number,
+        "dispatchable": "YES" or null,
+        "skill_sewers_mainline": "1"-"5" or null,
+        "skill_water_heaters": "1"-"5" or null,
+        "skill_misc_plumbing": "1"-"5" or null,
+        "skill_gas_lines": "1"-"5" or null,
+        "skill_well_pump": "1"-"5" or null,
+        "is_excavator": "YES" or null
+    }
+    """
+    import requests
+
+    data = await request.json()
+
+    print("\n" + "=" * 70)
+    print(f"UPDATING TECHNICIAN {technician_id}")
+    print("=" * 70)
+    print(f"  Request body: {data}")
+
+    token = get_access_token()
+    headers = {
+        "Authorization": f"Bearer {token}",
+        "ST-App-Key": APP_KEY,
+        "Content-Type": "application/json"
+    }
+
+    # First fetch current technician to get Is Excavator typeId
+    tech_url = f"https://api.servicetitan.io/settings/v2/tenant/{TENANT_ID}/technicians/{technician_id}"
+    tech_resp = requests.get(tech_url, headers=headers)
+
+    is_excavator_type_id = None
+    if tech_resp.status_code == 200:
+        tech_data = tech_resp.json()
+        for cf in tech_data.get("customFields", []):
+            if cf.get("name") == "Is Excavator":
+                is_excavator_type_id = cf.get("typeId")
+                break
+
+    # Map request fields to custom field type IDs
+    field_mapping = {
+        "dispatchable": ("Dispatchable", TECH_FIELD_IDS["Dispatchable"]),
+        "skill_sewers_mainline": ("Skill_Sewers_Mainline", TECH_FIELD_IDS["Skill_Sewers_Mainline"]),
+        "skill_water_heaters": ("Skill_Water_Heaters", TECH_FIELD_IDS["Skill_Water_Heaters"]),
+        "skill_misc_plumbing": ("Skill_Misc_Plumbing", TECH_FIELD_IDS["Skill_Misc_Plumbing"]),
+        "skill_gas_lines": ("Skill_Gas_Lines", TECH_FIELD_IDS["Skill_Gas_Lines"]),
+        "skill_well_pump": ("Skill_Well_Pump", TECH_FIELD_IDS["Skill_Well_Pump"]),
+    }
+
+    # Add Is Excavator if we found its typeId
+    if is_excavator_type_id:
+        field_mapping["is_excavator"] = ("Is Excavator", is_excavator_type_id)
+
+    # Build custom fields array for update
+    custom_fields = []
+    updated_fields = []
+
+    for field_key, (field_name, type_id) in field_mapping.items():
+        if field_key in data:
+            value = data[field_key]
+            if value is not None:
+                custom_fields.append({
+                    "typeId": type_id,
+                    "value": str(value)
+                })
+            else:
+                # Send empty string to clear the field
+                custom_fields.append({
+                    "typeId": type_id,
+                    "value": ""
+                })
+            updated_fields.append(f"{field_name}={value}")
+            print(f"  [Custom Field] {field_name} = {value}")
+
+    # Build main payload for technician update
+    payload = {}
+
+    # Handle direct technician fields
+    if "name" in data:
+        payload["name"] = data["name"]
+        updated_fields.append(f"name={data['name']}")
+        print(f"  [Direct] name = {data['name']}")
+
+    if "email" in data:
+        payload["email"] = data["email"] or ""
+        updated_fields.append(f"email={data['email']}")
+        print(f"  [Direct] email = {data['email']}")
+
+    if "phone" in data:
+        payload["phoneNumber"] = data["phone"] or ""
+        updated_fields.append(f"phoneNumber={data['phone']}")
+        print(f"  [Direct] phoneNumber = {data['phone']}")
+
+    if "business_unit_id" in data:
+        payload["businessUnitId"] = data["business_unit_id"]
+        updated_fields.append(f"businessUnitId={data['business_unit_id']}")
+        print(f"  [Direct] businessUnitId = {data['business_unit_id']}")
+
+    # Add custom fields to payload if any
+    if custom_fields:
+        payload["customFields"] = custom_fields
+
+    if not payload:
+        print("  No fields to update")
+        return {"error": "No valid fields provided to update"}
+
+    # PATCH the technician
+    print(f"  PATCH {tech_url}")
+    print(f"  Payload: {payload}")
+
+    resp = requests.patch(tech_url, headers=headers, json=payload)
+    print(f"  Response: {resp.status_code}")
+
+    if resp.status_code in (200, 204):
+        print(f"  SUCCESS: Updated {len(updated_fields)} fields")
+        for field in updated_fields:
+            print(f"    - {field}")
+        print("=" * 70 + "\n")
+
+        # Fetch and return updated technician data
+        get_resp = requests.get(tech_url, headers=headers)
+        if get_resp.status_code == 200:
+            tech_data = get_resp.json()
+            skills = {}
+            for cf in tech_data.get("customFields", []):
+                skills[cf.get("name", "")] = cf.get("value")
+
+            # Get email/phone directly from technician record
+            tech_name = tech_data.get("name", "")
+
+            return {
+                "status": "success",
+                "technician_id": technician_id,
+                "updated_fields": updated_fields,
+                "technician": {
+                    "id": tech_data.get("id"),
+                    "name": tech_name,
+                    "email": tech_data.get("email"),
+                    "phone": tech_data.get("phoneNumber"),
+                    "status": tech_data.get("status"),
+                    "active": tech_data.get("active"),
+                    "businessUnitId": tech_data.get("businessUnitId"),
+                    "skills": skills
+                }
+            }
+        else:
+            return {
+                "status": "success",
+                "technician_id": technician_id,
+                "updated_fields": updated_fields,
+                "message": "Updated but could not fetch latest data"
+            }
+    else:
+        print(f"  FAILED: {resp.text[:500]}")
+        print("=" * 70 + "\n")
+        return {
+            "status": "error",
+            "technician_id": technician_id,
+            "error": resp.text,
+            "status_code": resp.status_code
+        }
+
+
+@app.get("/api/excavators")
+async def get_excavators():
+    """
+    Fetch excavators from ServiceTitan with email/phone from employees.
+    Excavators are technicians with "Is Excavator" == "YES".
+    """
+    import requests
+
+    token = get_access_token()
+    headers = {
+        "Authorization": f"Bearer {token}",
+        "ST-App-Key": APP_KEY,
+        "Content-Type": "application/json"
+    }
+
+    all_technicians = []
+    page = 1
+
+    while True:
+        url = f"https://api.servicetitan.io/settings/v2/tenant/{TENANT_ID}/technicians"
+        params = {"pageSize": 100, "page": page}
+        resp = requests.get(url, headers=headers, params=params)
+
+        if resp.status_code != 200:
+            return {"error": f"Failed to fetch technicians: {resp.status_code}"}
+
+        data = resp.json().get("data", [])
+        if not data:
+            break
+
+        for tech in data:
+            skills = {}
+            for cf in tech.get("customFields", []):
+                cf_name = cf.get("name", "")
+                skills[cf_name] = cf.get("value")
+
+            tech_info = {
+                "id": tech.get("id"),
+                "name": tech.get("name", ""),
+                "email": tech.get("email"),  # Direct from technician record
+                "phone": tech.get("phoneNumber"),  # Direct from technician record
+                "status": tech.get("status"),
+                "active": tech.get("active"),
+                "zoneIds": tech.get("zoneIds", []),
+                "businessUnitId": tech.get("businessUnitId"),
+                "location": tech.get("location"),
+                "skills": skills
+            }
+            all_technicians.append(tech_info)
+
+        if len(data) < 100:
+            break
+        page += 1
+
+    # Filter to excavators: active AND "Is Excavator" == "YES"
+    excavators = [
+        t for t in all_technicians
+        if t["active"] and t["skills"].get("Is Excavator") == "YES"
+    ]
+
+    print(f"[API] Found {len(excavators)} excavators (Is Excavator=YES)")
+
+    return {
+        "count": len(excavators),
+        "excavators": excavators
+    }
+
+
+@app.put("/api/excavators/{technician_id}/email")
+async def update_excavator_email(technician_id: int, request: Request):
+    """
+    Update an excavator's email address.
+    Redirects to PUT /api/technicians/{id} with email field.
+
+    Note: Email is stored on the Employee record in ServiceTitan, not Technician.
+    This endpoint stores email locally for display purposes.
+    """
+    import json
+
+    data = await request.json()
+    new_email = data.get("email")
+
+    print("\n" + "=" * 70)
+    print(f"UPDATING EXCAVATOR EMAIL {technician_id}")
+    print("=" * 70)
+    print(f"  [Email] {technician_id} = {new_email}")
+
+    # Update in-memory dict (email is on Employee record, not Technician, so we store locally)
+    if new_email:
+        EXCAVATOR_EMAILS_BY_ID[technician_id] = new_email
+    elif technician_id in EXCAVATOR_EMAILS_BY_ID:
+        del EXCAVATOR_EMAILS_BY_ID[technician_id]
+
+    # Persist to JSON file
+    config_path = os.path.join(os.path.dirname(__file__), "excavator_emails.json")
+    try:
+        with open(config_path, "w") as f:
+            json.dump(EXCAVATOR_EMAILS_BY_ID, f, indent=2)
+        print(f"  Saved to {config_path}")
+    except Exception as e:
+        print(f"  Warning: Could not persist to file: {e}")
+
+    print("=" * 70 + "\n")
+
+    return {
+        "success": True,
+        "technician_id": technician_id,
+        "email": new_email
+    }
+
+
+@app.get("/api/technicians/custom-fields")
+async def get_technician_custom_fields():
+    """
+    Debug endpoint: List all unique custom field names across all technicians.
+    """
+    import requests
+
+    token = get_access_token()
+    headers = {
+        "Authorization": f"Bearer {token}",
+        "ST-App-Key": APP_KEY,
+        "Content-Type": "application/json"
+    }
+
+    all_fields = {}
+    page = 1
+
+    while True:
+        url = f"https://api.servicetitan.io/settings/v2/tenant/{TENANT_ID}/technicians"
+        params = {"pageSize": 100, "page": page}
+        resp = requests.get(url, headers=headers, params=params)
+
+        if resp.status_code != 200:
+            return {"error": f"Failed to fetch: {resp.status_code}"}
+
+        data = resp.json().get("data", [])
+        if not data:
+            break
+
+        for tech in data:
+            for cf in tech.get("customFields", []):
+                name = cf.get("name", "")
+                value = cf.get("value")
+                if name not in all_fields:
+                    all_fields[name] = {"values": set(), "count": 0}
+                all_fields[name]["count"] += 1
+                if value:
+                    all_fields[name]["values"].add(str(value))
+
+        if len(data) < 100:
+            break
+        page += 1
+
+    # Convert sets to lists for JSON
+    result = {
+        name: {"count": info["count"], "sample_values": list(info["values"])[:5]}
+        for name, info in all_fields.items()
+    }
+
+    return {"custom_fields": result}

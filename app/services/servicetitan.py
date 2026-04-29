@@ -29,11 +29,28 @@ EXCAVATION_JET_JOB_TYPE_ID = 1447569500      # JET1
 EXCAVATION_REEVAL_JOB_TYPE_ID = 1447571975   # EXR Excavation ReEval
 EXCAVATION_FINAL_JOB_TYPE_ID = 1447569360    # EXF FINAL PAYMENT
 
-# Team emails for excavation notifications
+# Team emails for excavation notifications (list for general notifications)
 EXCAVATION_TEAM_EMAILS = [
     "mrr043@gmail.com",  # Tim Boyle
     # Add more team members as needed
 ]
+
+# Excavator emails by technician ID (for dashboard editing)
+# Load from JSON file if exists, otherwise use defaults
+def _load_excavator_emails():
+    import json
+    config_path = os.path.join(os.path.dirname(__file__), "..", "excavator_emails.json")
+    try:
+        with open(config_path, "r") as f:
+            data = json.load(f)
+            # Convert string keys to int (JSON doesn't support int keys)
+            return {int(k): v for k, v in data.items()}
+    except (FileNotFoundError, json.JSONDecodeError):
+        return {
+            1532411211: "mrr043@gmail.com",  # Tim Boyle
+        }
+
+EXCAVATOR_EMAILS_BY_ID = _load_excavator_emails()
 
 # Email credentials (loaded from .env)
 SARAH_EMAIL = os.getenv("SARAH_EMAIL")
@@ -57,15 +74,15 @@ def haversine(lat1, lon1, lat2, lon2):
 
 def find_closest_excavator(job_lat, job_lon):
     """
-    Find the closest qualified excavators to a job location.
+    Find the closest excavator to a job location.
 
     Qualification criteria:
-    - Skill_Sewers_Mainline == "1" (top excavation skill)
-    - Dispatchable == "YES"
+    - "Is Excavator" == "YES"
     - active == true
-    - Has valid GPS coordinates
+    - Has valid GPS coordinates (latitude and longitude not null)
 
-    Returns top 3 closest as list of dicts with name, distance, status, id.
+    Returns single closest excavator dict with id, name, distance, status.
+    Prioritizes Idle status, falls back to closest regardless of status.
     """
     from app.services.servicetitan import get_access_token, TENANT_ID, APP_KEY
 
@@ -117,17 +134,14 @@ def find_closest_excavator(job_lat, job_lon):
         if not tech.get("active"):
             continue
 
-        # Check custom fields
+        # Check custom fields for Is_Excavator
         custom_fields = {}
         for cf in tech.get("customFields", []):
             cf_name = cf.get("name", "")
             custom_fields[cf_name] = cf.get("value")
 
-        # Must have top sewer skill (1) and be dispatchable
-        sewer_skill = custom_fields.get("Skill_Sewers_Mainline", "")
-        dispatchable = custom_fields.get("Dispatchable", "")
-
-        if sewer_skill != "1" or dispatchable != "YES":
+        # Must have "Is Excavator" == "YES"
+        if custom_fields.get("Is Excavator") != "YES":
             continue
 
         # Must have valid GPS coordinates
@@ -146,7 +160,7 @@ def find_closest_excavator(job_lat, job_lon):
             "lon": lon
         })
 
-    print(f"[Excavation] Found {len(qualified)} qualified excavators")
+    print(f"[Excavation] Found {len(qualified)} excavators (Is Excavator=YES)")
 
     if not qualified:
         return None

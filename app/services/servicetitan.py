@@ -149,7 +149,7 @@ def find_closest_excavator(job_lat, job_lon):
     print(f"[Excavation] Found {len(qualified)} qualified excavators")
 
     if not qualified:
-        return []
+        return None
 
     # Calculate distances and sort
     for tech in qualified:
@@ -157,17 +157,27 @@ def find_closest_excavator(job_lat, job_lon):
 
     qualified.sort(key=lambda x: x["distance"])
 
-    # Return top 3
-    top_3 = []
-    for tech in qualified[:3]:
-        top_3.append({
-            "id": tech["id"],
-            "name": tech["name"],
-            "distance": tech["distance"],
-            "status": tech["status"]
-        })
+    # First try to find closest Idle technician
+    selected = None
+    for tech in qualified:
+        if tech["status"] == "Idle":
+            selected = tech
+            break
 
-    return top_3
+    # If no Idle technician, take the closest one regardless of status
+    if not selected:
+        selected = qualified[0]
+
+    result = {
+        "id": selected["id"],
+        "name": selected["name"],
+        "distance": selected["distance"],
+        "status": selected["status"]
+    }
+
+    print(f"[Excavation] Selected: {result['name']} ({result['distance']:.1f} miles) Status: {result['status']}")
+
+    return result
 
 
 def get_dispatch_category(job_type_name):
@@ -1792,9 +1802,9 @@ Mr. Rooter Plumbing
     else:
         print("[Excavation] Email not configured (missing SARAH_EMAIL or SARAH_EMAIL_PASSWORD)")
 
-    # Find closest excavators and post recommendation note to JET job
-    print("\n[Excavation] Finding closest available excavators...")
-    closest_excavators = []
+    # Find closest excavator and post recommendation note to JET job
+    print("\n[Excavation] Finding closest available excavator...")
+    closest_excavator = None
     recommendation_posted = False
 
     try:
@@ -1810,22 +1820,17 @@ Mr. Rooter Plumbing
 
             if job_lat and job_lon:
                 print(f"[Excavation] Job location: {job_lat}, {job_lon}")
-                closest_excavators = find_closest_excavator(job_lat, job_lon)
+                closest_excavator = find_closest_excavator(job_lat, job_lon)
 
-                if closest_excavators:
+                if closest_excavator:
                     # Build recommendation note
-                    excavator_lines = []
-                    for i, exc in enumerate(closest_excavators, 1):
-                        excavator_lines.append(
-                            f"{i}. {exc['name']} — {exc['distance']:.1f} miles | Status: {exc['status']}"
-                        )
-
                     note_text = f"""=== EXCAVATION TEAM RECOMMENDATION ===
 Based on current location and availability:
 
-{chr(10).join(excavator_lines)}
+Recommended Technician:
+{closest_excavator['name']} — {closest_excavator['distance']:.1f} miles away | Status: {closest_excavator['status']}
 
-Please assign one of the above to this job in ServiceTitan.
+Please assign this technician to this job in ServiceTitan.
 Note: Auto-assignment pending ST API access.
 
 Linked Jobs:
@@ -1840,7 +1845,6 @@ Linked Jobs:
 
                     if note_resp.status_code in (200, 201):
                         recommendation_posted = True
-                        print(f"[Excavation] Closest: {closest_excavators[0]['name']} at {closest_excavators[0]['distance']:.1f} miles away")
                         print(f"[Excavation] Recommendation note posted to job #{job_ids['jet']}")
                     else:
                         print(f"[Excavation] Failed to post recommendation note: {note_resp.status_code}")
@@ -1860,8 +1864,8 @@ Linked Jobs:
     print(f"  Re-evaluate Job: {job_ids['reeval']}")
     print(f"  Final Payment Job: {job_ids['final']}")
     print(f"  Emails sent: {emails_sent}")
-    if closest_excavators:
-        print(f"  Closest excavator: {closest_excavators[0]['name']} ({closest_excavators[0]['distance']:.1f} mi)")
+    if closest_excavator:
+        print(f"  Recommended excavator: {closest_excavator['name']} ({closest_excavator['distance']:.1f} mi)")
     print(f"  Recommendation note: {'Posted' if recommendation_posted else 'Not posted'}")
     print("=" * 70 + "\n")
 
@@ -1871,7 +1875,7 @@ Linked Jobs:
         "reeval_job_id": job_ids["reeval"],
         "final_payment_job_id": job_ids["final"],
         "emails_sent": emails_sent,
-        "closest_excavators": closest_excavators,
+        "recommended_excavator": closest_excavator,
         "recommendation_posted": recommendation_posted,
         "message": f"Excavation jobs created: JET #{job_ids['jet']}, Re-eval #{job_ids['reeval']}, Final #{job_ids['final']}"
     }

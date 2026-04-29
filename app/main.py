@@ -4,6 +4,8 @@ from dotenv import load_dotenv
 from app.routes import booking
 from app.webhooks import retell_webhook
 from app.webhooks.retell_webhook import is_lead_already_created, mark_lead_created
+from app.services.retell import get_job_id_for_call
+from app.services.servicetitan_notes import post_job_note
 from app.services.servicetitan import test_connection, lookup_customer_by_phone, explore_account, lookup_by_address, fetch_account_config, get_campaign_from_call, get_campaign_details, get_latest_call, get_call_details, test_telecom, get_live_call_campaign, get_zones, get_job_types, get_job_types_from_st, detect_job_type, store_live_call_info, parse_appointment_time, get_business_unit_by_zone, get_business_units_from_st, store_service_area_business_unit, store_service_area_address, store_service_area_bu_by_address, create_lead, get_access_token, TENANT_ID, APP_KEY, clean_phone
 from app.services.service_area import check_service_area, get_service_area_zips, preload_service_area_cache
 
@@ -868,6 +870,13 @@ async def post_call_webhook(request: Request):
     summary = "Call transcript analysis unavailable"
     action_result = "None"
 
+    # PRE-CHECK: If we have a call_id -> job_id mapping, we KNOW a booking was made
+    # This is more reliable than AI analysis
+    mapped_job_id = get_job_id_for_call(call_id)
+    if mapped_job_id:
+        print(f"[PostCall] Found mapping for call -> job {mapped_job_id}")
+        booking_made = "yes"  # Override - we know booking was made
+
     # Analyze transcript with OpenAI
     if transcript:
         try:
@@ -900,7 +909,9 @@ SUMMARY:Brief 2-3 sentence summary of the call"""
             for line in ai_response.split("\n"):
                 line = line.strip()
                 if line.startswith("BOOKING_MADE:"):
-                    booking_made = line.replace("BOOKING_MADE:", "").strip().lower()
+                    # Don't override if we already know from mapping that booking was made
+                    if not mapped_job_id:
+                        booking_made = line.replace("BOOKING_MADE:", "").strip().lower()
                 elif line.startswith("CALL_TYPE:"):
                     call_type = line.replace("CALL_TYPE:", "").strip().upper()
                 elif line.startswith("SUMMARY:"):
@@ -929,54 +940,68 @@ Recording: {recording_url}
 {transcript}"""
 
     if booking_made == "yes":
-        # Find recent job for this caller
-        print(f"[PostCall] Booking detected - searching for recent job...")
+        # FIRST: Check our call_id -> job_id mapping (most reliable)
+        job_id = get_job_id_for_call(call_id)
 
-        jobs_url = f"https://api.servicetitan.io/jpm/v2/tenant/{TENANT_ID}/jobs"
-        params = {"pageSize": 5, "orderBy": "Id", "orderByDirection": "desc"}
-
-        if cleaned_from_number:
-            params["phone"] = cleaned_from_number
-
-        jobs_resp = requests.get(jobs_url, headers=headers, params=params)
-
-        if jobs_resp.status_code == 200:
-            jobs = jobs_resp.json().get("data", [])
-            job_id = None
-
-            # Find job created within last 2 hours
-            two_hours_ago = datetime.now(timezone.utc) - timedelta(hours=2)
-
-            for job in jobs:
-                created_on = job.get("createdOn", "")
-                if created_on:
-                    try:
-                        # Parse ISO format datetime
-                        job_created = datetime.fromisoformat(created_on.replace("Z", "+00:00"))
-                        if job_created > two_hours_ago:
-                            job_id = job.get("id")
-                            print(f"[PostCall] Found recent job: {job_id}")
-                            break
-                    except Exception as e:
-                        print(f"[PostCall] Error parsing job date: {e}")
-
-            if job_id:
-                # Add note to job
-                note_url = f"https://api.servicetitan.io/jpm/v2/tenant/{TENANT_ID}/jobs/{job_id}/notes"
-                note_resp = requests.post(note_url, headers=headers, json={"text": note_text})
-
-                if note_resp.status_code in (200, 201):
-                    print(f"[PostCall] Booking detected - attaching to job {job_id}")
-                    action_result = f"Job {job_id}"
-                else:
-                    print(f"[PostCall] Failed to add note to job: {note_resp.status_code} - {note_resp.text}")
-                    action_result = f"Job {job_id} (note failed)"
+        if job_id:
+            print(f"[PostCall] Found job from call mapping: {job_id}")
+            # Add note to job
+            success = post_job_note(str(job_id), note_text)
+            if success:
+                print(f"[PostCall] Booking detected - attached to job {job_id} (from mapping)")
+                action_result = f"Job {job_id}"
             else:
-                print("[PostCall] No recent job found, creating lead instead")
-                booking_made = "no"  # Fall through to lead creation
+                print(f"[PostCall] Failed to add note to job {job_id}")
+                action_result = f"Job {job_id} (note failed)"
         else:
-            print(f"[PostCall] Jobs lookup failed: {jobs_resp.status_code}")
-            booking_made = "no"  # Fall through to lead creation
+            # FALLBACK: Search for recent job by phone (less reliable for shared numbers)
+            print(f"[PostCall] No mapping found, searching for recent job by phone...")
+
+            jobs_url = f"https://api.servicetitan.io/jpm/v2/tenant/{TENANT_ID}/jobs"
+            params = {"pageSize": 5, "orderBy": "Id", "orderByDirection": "desc"}
+
+            if cleaned_from_number:
+                params["phone"] = cleaned_from_number
+
+            jobs_resp = requests.get(jobs_url, headers=headers, params=params)
+
+            if jobs_resp.status_code == 200:
+                jobs = jobs_resp.json().get("data", [])
+                found_job_id = None
+
+                # Find job created within last 2 hours
+                two_hours_ago = datetime.now(timezone.utc) - timedelta(hours=2)
+
+                for job in jobs:
+                    created_on = job.get("createdOn", "")
+                    if created_on:
+                        try:
+                            # Parse ISO format datetime
+                            job_created = datetime.fromisoformat(created_on.replace("Z", "+00:00"))
+                            if job_created > two_hours_ago:
+                                found_job_id = job.get("id")
+                                print(f"[PostCall] Found recent job by phone: {found_job_id}")
+                                break
+                        except Exception as e:
+                            print(f"[PostCall] Error parsing job date: {e}")
+
+                if found_job_id:
+                    # Add note to job
+                    note_url = f"https://api.servicetitan.io/jpm/v2/tenant/{TENANT_ID}/jobs/{found_job_id}/notes"
+                    note_resp = requests.post(note_url, headers=headers, json={"text": note_text})
+
+                    if note_resp.status_code in (200, 201):
+                        print(f"[PostCall] Booking detected - attaching to job {found_job_id}")
+                        action_result = f"Job {found_job_id}"
+                    else:
+                        print(f"[PostCall] Failed to add note to job: {note_resp.status_code} - {note_resp.text}")
+                        action_result = f"Job {found_job_id} (note failed)"
+                else:
+                    print("[PostCall] No recent job found, creating lead instead")
+                    booking_made = "no"  # Fall through to lead creation
+            else:
+                print(f"[PostCall] Jobs lookup failed: {jobs_resp.status_code}")
+                booking_made = "no"  # Fall through to lead creation
 
     if booking_made != "yes":
         # Check if lead was already created by another webhook

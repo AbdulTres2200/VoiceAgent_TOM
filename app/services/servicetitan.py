@@ -13,13 +13,20 @@ def get_dispatch_category(job_type_name):
     """
     Map ServiceTitan job type names to dispatch categories.
     Returns one of: "Sewers/Mainline", "Water Heaters", "Misc Plumbing", "Gas Lines", "Well Pump"
+
+    Mapping rules:
+    - Gas1, Gas2, anything with "GAS" → Gas Lines
+    - WH1, WH2, "Water Heater" → Water Heaters
+    - Pump1, Pump2, anything with "PUMP" or "WELL" → Well Pump
+    - S1, S2, anything with "DRAIN", "SEWER", "MAINLINE" → Sewers/Mainline
+    - P1, P2, P3 and everything else → Misc Plumbing
     """
     if not job_type_name:
         return "Misc Plumbing"
 
     name_upper = job_type_name.upper()
 
-    # Gas line jobs - check first to avoid GAS1 matching S1
+    # Gas line jobs - check first to avoid GAS1 matching S1/S2
     if "GAS" in name_upper:
         return "Gas Lines"
 
@@ -27,15 +34,17 @@ def get_dispatch_category(job_type_name):
     if "WH" in name_upper or "WATER HEATER" in name_upper:
         return "Water Heaters"
 
-    # Well pump jobs
-    if "PUMP2" in name_upper or "WELL" in name_upper:
+    # Well pump jobs - "PUMP" catches Pump1, Pump2, etc. (won't match P1/P2)
+    if "PUMP" in name_upper or "WELL" in name_upper:
         return "Well Pump"
 
-    # Main sewer/drain jobs - use word boundary to avoid matching GAS1
-    if name_upper.startswith("S1") or "MAIN LINE" in name_upper or "MAINLINE" in name_upper:
+    # Sewer/drain jobs - S1, S2 at start, or drain-related keywords
+    if name_upper.startswith("S1") or name_upper.startswith("S2") or \
+       "DRAIN" in name_upper or "SEWER" in name_upper or \
+       "MAIN LINE" in name_upper or "MAINLINE" in name_upper:
         return "Sewers/Mainline"
 
-    # Default to misc plumbing (covers P1, P2, P3, S2, Pump1, etc.)
+    # Default to misc plumbing (covers P1, P2, P3, etc.)
     return "Misc Plumbing"
 
 

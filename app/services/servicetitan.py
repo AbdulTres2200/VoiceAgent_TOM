@@ -39,6 +39,136 @@ EXCAVATION_TEAM_EMAILS = [
 SARAH_EMAIL = os.getenv("SARAH_EMAIL")
 SARAH_EMAIL_PASSWORD = os.getenv("SARAH_EMAIL_PASSWORD")
 
+# Cache for excavation technicians (5 minute TTL - location changes frequently)
+_excavator_cache = {"data": None, "expires_at": 0}
+_EXCAVATOR_CACHE_TTL = 300  # 5 minutes
+
+
+def haversine(lat1, lon1, lat2, lon2):
+    """Calculate distance between two points in miles using haversine formula."""
+    from math import radians, sin, cos, sqrt, atan2
+    R = 3959  # Earth radius in miles
+    dlat = radians(lat2 - lat1)
+    dlon = radians(lon2 - lon1)
+    a = sin(dlat/2)**2 + cos(radians(lat1)) * cos(radians(lat2)) * sin(dlon/2)**2
+    c = 2 * atan2(sqrt(a), sqrt(1-a))
+    return R * c
+
+
+def find_closest_excavator(job_lat, job_lon):
+    """
+    Find the closest qualified excavators to a job location.
+
+    Qualification criteria:
+    - Skill_Sewers_Mainline == "1" (top excavation skill)
+    - Dispatchable == "YES"
+    - active == true
+    - Has valid GPS coordinates
+
+    Returns top 3 closest as list of dicts with name, distance, status, id.
+    """
+    from app.services.servicetitan import get_access_token, TENANT_ID, APP_KEY
+
+    current_time = time.time()
+
+    # Check cache
+    if _excavator_cache["data"] and current_time < _excavator_cache["expires_at"]:
+        all_techs = _excavator_cache["data"]
+        print(f"[Excavation] Using cached technician data ({len(all_techs)} techs)")
+    else:
+        # Fetch fresh data from ServiceTitan
+        print("[Excavation] Fetching technicians from ServiceTitan...")
+        token = get_access_token()
+        headers = {
+            "Authorization": f"Bearer {token}",
+            "ST-App-Key": APP_KEY,
+            "Content-Type": "application/json"
+        }
+
+        all_techs = []
+        page = 1
+
+        while True:
+            url = f"https://api.servicetitan.io/settings/v2/tenant/{TENANT_ID}/technicians"
+            params = {"pageSize": 100, "active": "true", "page": page}
+            resp = requests.get(url, headers=headers, params=params)
+
+            if resp.status_code != 200:
+                print(f"[Excavation] Failed to fetch technicians: {resp.status_code}")
+                break
+
+            data = resp.json().get("data", [])
+            if not data:
+                break
+
+            all_techs.extend(data)
+            if len(data) < 100:
+                break
+            page += 1
+
+        # Cache the data
+        _excavator_cache["data"] = all_techs
+        _excavator_cache["expires_at"] = current_time + _EXCAVATOR_CACHE_TTL
+        print(f"[Excavation] Fetched {len(all_techs)} technicians, cached for 5 minutes")
+
+    # Filter to qualified excavators
+    qualified = []
+    for tech in all_techs:
+        if not tech.get("active"):
+            continue
+
+        # Check custom fields
+        custom_fields = {}
+        for cf in tech.get("customFields", []):
+            cf_name = cf.get("name", "")
+            custom_fields[cf_name] = cf.get("value")
+
+        # Must have top sewer skill (1) and be dispatchable
+        sewer_skill = custom_fields.get("Skill_Sewers_Mainline", "")
+        dispatchable = custom_fields.get("Dispatchable", "")
+
+        if sewer_skill != "1" or dispatchable != "YES":
+            continue
+
+        # Must have valid GPS coordinates
+        location = tech.get("location", {}) or {}
+        lat = location.get("latitude")
+        lon = location.get("longitude")
+
+        if lat is None or lon is None:
+            continue
+
+        qualified.append({
+            "id": tech.get("id"),
+            "name": tech.get("name"),
+            "status": tech.get("status"),
+            "lat": lat,
+            "lon": lon
+        })
+
+    print(f"[Excavation] Found {len(qualified)} qualified excavators")
+
+    if not qualified:
+        return []
+
+    # Calculate distances and sort
+    for tech in qualified:
+        tech["distance"] = haversine(job_lat, job_lon, tech["lat"], tech["lon"])
+
+    qualified.sort(key=lambda x: x["distance"])
+
+    # Return top 3
+    top_3 = []
+    for tech in qualified[:3]:
+        top_3.append({
+            "id": tech["id"],
+            "name": tech["name"],
+            "distance": tech["distance"],
+            "status": tech["status"]
+        })
+
+    return top_3
+
 
 def get_dispatch_category(job_type_name):
     """
@@ -1662,12 +1792,77 @@ Mr. Rooter Plumbing
     else:
         print("[Excavation] Email not configured (missing SARAH_EMAIL or SARAH_EMAIL_PASSWORD)")
 
+    # Find closest excavators and post recommendation note to JET job
+    print("\n[Excavation] Finding closest available excavators...")
+    closest_excavators = []
+    recommendation_posted = False
+
+    try:
+        # Fetch location coordinates
+        location_url = f"https://api.servicetitan.io/crm/v2/tenant/{TENANT_ID}/locations/{location_id}"
+        loc_resp = requests.get(location_url, headers=headers)
+
+        if loc_resp.status_code == 200:
+            loc_data = loc_resp.json()
+            loc_address = loc_data.get("address", {})
+            job_lat = loc_address.get("latitude")
+            job_lon = loc_address.get("longitude")
+
+            if job_lat and job_lon:
+                print(f"[Excavation] Job location: {job_lat}, {job_lon}")
+                closest_excavators = find_closest_excavator(job_lat, job_lon)
+
+                if closest_excavators:
+                    # Build recommendation note
+                    excavator_lines = []
+                    for i, exc in enumerate(closest_excavators, 1):
+                        excavator_lines.append(
+                            f"{i}. {exc['name']} — {exc['distance']:.1f} miles | Status: {exc['status']}"
+                        )
+
+                    note_text = f"""=== EXCAVATION TEAM RECOMMENDATION ===
+Based on current location and availability:
+
+{chr(10).join(excavator_lines)}
+
+Please assign one of the above to this job in ServiceTitan.
+Note: Auto-assignment pending ST API access.
+
+Linked Jobs:
+- JET: #{job_ids['jet']}
+- Re-evaluate: #{job_ids['reeval']}
+- Final Payment: #{job_ids['final']}
+=== END ==="""
+
+                    # Post note to JET job
+                    note_url = f"https://api.servicetitan.io/jpm/v2/tenant/{TENANT_ID}/jobs/{job_ids['jet']}/notes"
+                    note_resp = requests.post(note_url, headers=headers, json={"text": note_text})
+
+                    if note_resp.status_code in (200, 201):
+                        recommendation_posted = True
+                        print(f"[Excavation] Closest: {closest_excavators[0]['name']} at {closest_excavators[0]['distance']:.1f} miles away")
+                        print(f"[Excavation] Recommendation note posted to job #{job_ids['jet']}")
+                    else:
+                        print(f"[Excavation] Failed to post recommendation note: {note_resp.status_code}")
+                else:
+                    print("[Excavation] No qualified excavators found with valid GPS coordinates")
+            else:
+                print("[Excavation] Location has no GPS coordinates, skipping excavator search")
+        else:
+            print(f"[Excavation] Failed to fetch location: {loc_resp.status_code}")
+
+    except Exception as e:
+        print(f"[Excavation] Excavator search failed: {e}")
+
     print("\n" + "=" * 70)
     print("EXCAVATION JOB CREATION COMPLETE")
     print(f"  JET Job: {job_ids['jet']}")
     print(f"  Re-evaluate Job: {job_ids['reeval']}")
     print(f"  Final Payment Job: {job_ids['final']}")
     print(f"  Emails sent: {emails_sent}")
+    if closest_excavators:
+        print(f"  Closest excavator: {closest_excavators[0]['name']} ({closest_excavators[0]['distance']:.1f} mi)")
+    print(f"  Recommendation note: {'Posted' if recommendation_posted else 'Not posted'}")
     print("=" * 70 + "\n")
 
     return {
@@ -1676,6 +1871,8 @@ Mr. Rooter Plumbing
         "reeval_job_id": job_ids["reeval"],
         "final_payment_job_id": job_ids["final"],
         "emails_sent": emails_sent,
+        "closest_excavators": closest_excavators,
+        "recommendation_posted": recommendation_posted,
         "message": f"Excavation jobs created: JET #{job_ids['jet']}, Re-eval #{job_ids['reeval']}, Final #{job_ids['final']}"
     }
 

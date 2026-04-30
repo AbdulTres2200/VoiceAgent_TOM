@@ -103,6 +103,8 @@ async def book_appointment(request: Request):
     contact_preference = args.get('contact_preference', "Phone")
     # is_emergency defaults to False if not provided
     is_emergency = args.get('is_emergency', False)
+    # is_excavation - if true, skip job type detection and use excavation workflow
+    is_excavation = args.get('is_excavation', False)
 
     # Get to_number from Retell (passed as dynamic variable from inbound webhook)
     to_number = args.get('to_number') or data.get('to_number')
@@ -162,6 +164,7 @@ async def book_appointment(request: Request):
         bu_display = f"{business_unit_id} (zone: {zone_business_unit_name})" if zone_business_unit_id else str(business_unit_id or 'Auto')
         print(f"║  Business Unit ID : {bu_display:<40} ║")
         print(f"║  Retell Call ID   : {str(call_id or 'Not provided'):<40} ║")
+        print(f"║  Is Excavation    : {str(is_excavation):<40} ║")
         print("╠══════════════════════════════════════════════════════════════╣")
         print(f"║  Received at      : {timestamp:<40} ║")
         print("╚══════════════════════════════════════════════════════════════╝")
@@ -186,7 +189,8 @@ async def book_appointment(request: Request):
         alternate_phone=alternate_phone,
         campaign_id=campaign_id,
         business_unit_id=business_unit_id,
-        is_emergency=is_emergency
+        is_emergency=is_emergency,
+        is_excavation=is_excavation
     )
 
     # Create confirmation message for Retell to read back

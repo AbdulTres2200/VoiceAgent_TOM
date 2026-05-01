@@ -1,4 +1,28 @@
-const API_BASE = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000'
+// Debug: log env var at module load
+console.log('[API] NEXT_PUBLIC_API_URL from env:', process.env.NEXT_PUBLIC_API_URL)
+
+// Use runtime detection for API URL
+function getApiBase(): string {
+  const envUrl = process.env.NEXT_PUBLIC_API_URL
+
+  // Check if we're in the browser
+  if (typeof window !== 'undefined') {
+    console.log('[API] Running in browser, hostname:', window.location.hostname)
+    console.log('[API] NEXT_PUBLIC_API_URL:', envUrl)
+
+    // Production: use the live backend
+    if (window.location.hostname !== 'localhost') {
+      const prodUrl = 'https://sarahvoiceagent-production.up.railway.app'
+      console.log('[API] Using production URL:', prodUrl)
+      return prodUrl
+    }
+  }
+
+  // Development/SSR fallback
+  const fallbackUrl = envUrl || 'http://localhost:8000'
+  console.log('[API] Using fallback URL:', fallbackUrl)
+  return fallbackUrl
+}
 
 export interface Technician {
   id: number
@@ -25,7 +49,7 @@ export interface Technician {
 }
 
 export async function getTechnicians(): Promise<Technician[]> {
-  const res = await fetch(`${API_BASE}/api/technicians`, {
+  const res = await fetch(`${getApiBase()}/api/technicians`, {
     cache: 'no-store'
   })
   const data = await res.json()
@@ -45,7 +69,7 @@ export async function updateTechnician(id: number, updates: {
   skill_well_pump?: string | null
   is_excavator?: string | null
 }) {
-  const res = await fetch(`${API_BASE}/api/technicians/${id}`, {
+  const res = await fetch(`${getApiBase()}/api/technicians/${id}`, {
     method: 'PUT',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(updates)
@@ -59,7 +83,7 @@ export interface Excavator extends Technician {
 }
 
 export async function getExcavators(): Promise<Excavator[]> {
-  const res = await fetch(`${API_BASE}/api/excavators`, {
+  const res = await fetch(`${getApiBase()}/api/excavators`, {
     cache: 'no-store'
   })
   const data = await res.json()
@@ -67,7 +91,7 @@ export async function getExcavators(): Promise<Excavator[]> {
 }
 
 export async function updateExcavatorEmail(id: number, email: string | null) {
-  const res = await fetch(`${API_BASE}/api/excavators/${id}/email`, {
+  const res = await fetch(`${getApiBase()}/api/excavators/${id}/email`, {
     method: 'PUT',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ email })

@@ -61,6 +61,100 @@ _excavator_cache = {"data": None, "expires_at": 0}
 _EXCAVATOR_CACHE_TTL = 300  # 5 minutes
 
 
+def send_excavation_email(
+    customer_name: str,
+    formatted_address: str,
+    phone: str,
+    customer_email: str,
+    issue_description: str,
+    appointment_time: str,
+    city: str,
+    jet_job_id: int,
+    reeval_job_id: int,
+    final_job_id: int,
+    technician_name: str,
+    technician_distance: float,
+    technician_status: str,
+    recipients: list = None
+) -> dict:
+    """
+    Send excavation job notification email to the team.
+
+    Args:
+        recipients: Optional list of email addresses. If None, uses EXCAVATION_TEAM_EMAILS.
+
+    Returns dict with:
+        - status: "success" or "failed"
+        - email_sent: True/False
+        - recipients: list of email addresses
+        - error: error message if failed
+    """
+    if recipients is None:
+        recipients = EXCAVATION_TEAM_EMAILS.copy()
+    else:
+        recipients = list(recipients)  # Ensure it's a list copy
+
+    result = {
+        "status": "failed",
+        "email_sent": False,
+        "recipients": recipients,
+        "error": None
+    }
+
+    if not SARAH_EMAIL or not SARAH_EMAIL_PASSWORD:
+        result["error"] = "Missing email credentials (SARAH_EMAIL or SARAH_EMAIL_PASSWORD)"
+        return result
+
+    if not recipients:
+        result["error"] = "No recipients configured (EXCAVATION_TEAM_EMAILS is empty)"
+        return result
+
+    try:
+        subject = f"New Excavation Job Booked - {customer_name} - {city}"
+        body = f"""New Excavation Job has been booked through Sarah AI.
+
+CUSTOMER DETAILS:
+Customer Name: {customer_name}
+Address: {formatted_address}
+Phone: {phone}
+Email: {customer_email}
+Issue: {issue_description}
+Appointment: {appointment_time}
+
+JOBS CREATED IN SERVICETITAN:
+1. JET Job #{jet_job_id}
+2. Re-Evaluate Job #{reeval_job_id}
+3. Final Payment Job #{final_job_id}
+
+RECOMMENDED EXCAVATOR:
+{technician_name} — {technician_distance:.1f} miles away | Status: {technician_status}
+
+Please log into ServiceTitan to view and assign these jobs.
+
+- Sarah AI Dispatch System
+Mr. Rooter Plumbing
+"""
+
+        msg = MIMEMultipart()
+        msg['From'] = SARAH_EMAIL
+        msg['To'] = ", ".join(recipients)
+        msg['Subject'] = subject
+        msg.attach(MIMEText(body, 'plain'))
+
+        with smtplib.SMTP('smtp.office365.com', 587) as server:
+            server.starttls()
+            server.login(SARAH_EMAIL, SARAH_EMAIL_PASSWORD)
+            server.sendmail(SARAH_EMAIL, recipients, msg.as_string())
+
+        result["status"] = "success"
+        result["email_sent"] = True
+        return result
+
+    except Exception as e:
+        result["error"] = str(e)
+        return result
+
+
 def haversine(lat1, lon1, lat2, lon2):
     """Calculate distance between two points in miles using haversine formula."""
     from math import radians, sin, cos, sqrt, atan2
@@ -155,6 +249,7 @@ def find_closest_excavator(job_lat, job_lon):
         qualified.append({
             "id": tech.get("id"),
             "name": tech.get("name"),
+            "email": tech.get("email"),  # Get email directly from technician record
             "status": tech.get("status"),
             "lat": lat,
             "lon": lon
@@ -185,11 +280,12 @@ def find_closest_excavator(job_lat, job_lon):
     result = {
         "id": selected["id"],
         "name": selected["name"],
+        "email": selected.get("email"),
         "distance": selected["distance"],
         "status": selected["status"]
     }
 
-    print(f"[Excavation] Selected: {result['name']} ({result['distance']:.1f} miles) Status: {result['status']}")
+    print(f"[Excavation] Selected: {result['name']} ({result['distance']:.1f} miles) Status: {result['status']} Email: {result['email']}")
 
     return result
 
@@ -1647,7 +1743,8 @@ def parse_appointment_time(appointment_time: str) -> dict:
     }
 
 
-def create_excavation_jobs(customer_id, location_id, summary, campaign_id, business_unit_id, appointment_time):
+def create_excavation_jobs(customer_id, location_id, summary, campaign_id, business_unit_id, appointment_time,
+                           customer_name=None, customer_email=None, customer_phone=None, formatted_address=None):
     """
     Create 3 jobs for excavation work in ServiceTitan:
     1. JET job (jetting/initial assessment)
@@ -1772,54 +1869,11 @@ def create_excavation_jobs(customer_id, location_id, summary, campaign_id, busin
         print(f"[Excavation] Job 3 (Final Payment) FAILED: {r.status_code} - {r.text[:200]}")
         return {"status": "error", "error": f"Final Payment job creation failed: {r.text}"}
 
-    # Send email notification to excavation team
-    print("\n[Excavation] Sending email notification to team...")
-    emails_sent = 0
-
-    if SARAH_EMAIL and SARAH_EMAIL_PASSWORD and EXCAVATION_TEAM_EMAILS:
-        try:
-            subject = f"New Excavation Job Booked - {summary[:50]}"
-            body = f"""New Excavation Job has been booked through Sarah AI.
-
-CUSTOMER DETAILS:
-Customer ID: {customer_id}
-Issue: {summary}
-Appointment: {appointment_time}
-
-JOBS CREATED IN SERVICETITAN:
-1. JET Job #{job_ids['jet']}
-2. Re-Evaluate Job #{job_ids['reeval']}
-3. Final Payment Job #{job_ids['final']}
-
-Please log into ServiceTitan to view and assign these jobs.
-
-- Sarah AI Dispatch System
-Mr. Rooter Plumbing
-"""
-
-            msg = MIMEMultipart()
-            msg['From'] = SARAH_EMAIL
-            msg['To'] = ", ".join(EXCAVATION_TEAM_EMAILS)
-            msg['Subject'] = subject
-            msg.attach(MIMEText(body, 'plain'))
-
-            with smtplib.SMTP('smtp.gmail.com', 587) as server:
-                server.starttls()
-                server.login(SARAH_EMAIL, SARAH_EMAIL_PASSWORD)
-                server.sendmail(SARAH_EMAIL, EXCAVATION_TEAM_EMAILS, msg.as_string())
-                emails_sent = len(EXCAVATION_TEAM_EMAILS)
-
-            print(f"[Excavation] Email sent to {emails_sent} team members")
-
-        except Exception as e:
-            print(f"[Excavation] Email failed: {e}")
-    else:
-        print("[Excavation] Email not configured (missing SARAH_EMAIL or SARAH_EMAIL_PASSWORD)")
-
-    # Find closest excavator and post recommendation note to JET job
+    # STEP 1: Find closest excavator FIRST (need their email for notification)
     print("\n[Excavation] Finding closest available excavator...")
     closest_excavator = None
     recommendation_posted = False
+    email_sent_to = None
 
     try:
         # Fetch location coordinates
@@ -1872,14 +1926,175 @@ Linked Jobs:
     except Exception as e:
         print(f"[Excavation] Excavator search failed: {e}")
 
+    # Department head info
+    DEPT_HEAD_EMAIL = "bguntrum@rooter2.com"
+    DEPT_HEAD_NAME = "Bill Guntrum"
+    DEPT_HEAD_PHONE = "+1 (724) 544-1058"
+
+    # Track emails sent
+    emails_sent_list = []
+
+    if SARAH_EMAIL and SARAH_EMAIL_PASSWORD:
+        # STEP 2A: Send email to closest excavator
+        print("\n[Excavation] Sending email notification to excavator...")
+        if closest_excavator and closest_excavator.get("email"):
+            excavator_email = closest_excavator["email"]
+            print(f"[Excavation] Excavator email from ServiceTitan: {excavator_email}")
+
+            try:
+                subject = f"New Excavation Job Assigned - {summary[:50]}"
+                body = f"""New Excavation Job has been booked through Sarah AI.
+
+YOU HAVE BEEN SELECTED as the closest available excavator.
+
+CUSTOMER DETAILS:
+Customer: {customer_name or 'N/A'}
+Address: {formatted_address or 'N/A'}
+Phone: {customer_phone or 'N/A'}
+Issue: {summary}
+Appointment: {appointment_time}
+
+JOBS CREATED IN SERVICETITAN:
+1. JET Job #{job_ids['jet']}
+2. Re-Evaluate Job #{job_ids['reeval']}
+3. Final Payment Job #{job_ids['final']}
+
+YOUR ASSIGNMENT:
+You are {closest_excavator['distance']:.1f} miles away from the job location.
+Current Status: {closest_excavator['status']}
+
+Please log into ServiceTitan to view the job details.
+
+- Sarah AI Dispatch System
+Mr. Rooter Plumbing
+"""
+
+                msg = MIMEMultipart()
+                msg['From'] = SARAH_EMAIL
+                msg['To'] = excavator_email
+                msg['Subject'] = subject
+                msg.attach(MIMEText(body, 'plain'))
+
+                with smtplib.SMTP('smtp.office365.com', 587) as server:
+                    server.starttls()
+                    server.login(SARAH_EMAIL, SARAH_EMAIL_PASSWORD)
+                    server.sendmail(SARAH_EMAIL, [excavator_email], msg.as_string())
+                    emails_sent_list.append({"to": excavator_email, "type": "excavator"})
+
+                print(f"[Excavation] Email sent to excavator: {excavator_email}")
+
+            except Exception as e:
+                print(f"[Excavation] Excavator email failed: {e}")
+        elif closest_excavator:
+            print(f"[Excavation] Excavator {closest_excavator['name']} has no email in ServiceTitan")
+        else:
+            print("[Excavation] No excavator found - cannot send excavator notification")
+
+        # STEP 2B: Send email to department head (Bill Guntrum)
+        print(f"\n[Excavation] Sending email to department head ({DEPT_HEAD_EMAIL})...")
+        try:
+            subject = f"New Excavation Job Booked - {customer_name or 'Customer'}"
+            body = f"""New Excavation Job has been booked through Sarah AI.
+
+CUSTOMER DETAILS:
+Customer: {customer_name or 'N/A'}
+Address: {formatted_address or 'N/A'}
+Phone: {customer_phone or 'N/A'}
+Email: {customer_email or 'N/A'}
+Issue: {summary}
+Appointment: {appointment_time}
+
+JOBS CREATED IN SERVICETITAN:
+1. JET Job #{job_ids['jet']}
+2. Re-Evaluate Job #{job_ids['reeval']}
+3. Final Payment Job #{job_ids['final']}
+
+ASSIGNED EXCAVATOR:
+{closest_excavator['name'] if closest_excavator else 'Not assigned'}{f" — {closest_excavator['distance']:.1f} miles away | Status: {closest_excavator['status']}" if closest_excavator else ''}
+
+Please log into ServiceTitan to view and manage these jobs.
+
+- Sarah AI Dispatch System
+Mr. Rooter Plumbing
+"""
+
+            msg = MIMEMultipart()
+            msg['From'] = SARAH_EMAIL
+            msg['To'] = DEPT_HEAD_EMAIL
+            msg['Subject'] = subject
+            msg.attach(MIMEText(body, 'plain'))
+
+            with smtplib.SMTP('smtp.office365.com', 587) as server:
+                server.starttls()
+                server.login(SARAH_EMAIL, SARAH_EMAIL_PASSWORD)
+                server.sendmail(SARAH_EMAIL, [DEPT_HEAD_EMAIL], msg.as_string())
+                emails_sent_list.append({"to": DEPT_HEAD_EMAIL, "type": "department_head"})
+
+            print(f"[Excavation] Email sent to department head: {DEPT_HEAD_EMAIL}")
+
+        except Exception as e:
+            print(f"[Excavation] Department head email failed: {e}")
+
+        # STEP 2C: Send thank you email to customer
+        if customer_email and "@" in customer_email:
+            print(f"\n[Excavation] Sending thank you email to customer ({customer_email})...")
+            try:
+                subject = "Thank You for Booking with Mr. Rooter Plumbing"
+                body = f"""Dear {customer_name or 'Valued Customer'},
+
+Thank you for booking an excavation job with Mr. Rooter Plumbing!
+
+YOUR APPOINTMENT DETAILS:
+Address: {formatted_address or 'N/A'}
+Issue: {summary}
+Appointment: {appointment_time}
+
+Your job has been scheduled and assigned to one of our experienced excavation specialists.
+
+If you have any questions or concerns about your upcoming appointment, please don't hesitate to contact our Project Manager:
+
+{DEPT_HEAD_NAME}
+Phone: {DEPT_HEAD_PHONE}
+
+We look forward to serving you!
+
+Best regards,
+Mr. Rooter Plumbing
+"""
+
+                msg = MIMEMultipart()
+                msg['From'] = SARAH_EMAIL
+                msg['To'] = customer_email
+                msg['Subject'] = subject
+                msg.attach(MIMEText(body, 'plain'))
+
+                with smtplib.SMTP('smtp.office365.com', 587) as server:
+                    server.starttls()
+                    server.login(SARAH_EMAIL, SARAH_EMAIL_PASSWORD)
+                    server.sendmail(SARAH_EMAIL, [customer_email], msg.as_string())
+                    emails_sent_list.append({"to": customer_email, "type": "customer"})
+
+                print(f"[Excavation] Thank you email sent to customer: {customer_email}")
+
+            except Exception as e:
+                print(f"[Excavation] Customer email failed: {e}")
+        else:
+            print(f"[Excavation] No customer email provided - skipping thank you email")
+
+    else:
+        print("[Excavation] Email not configured (missing SARAH_EMAIL or SARAH_EMAIL_PASSWORD)")
+
     print("\n" + "=" * 70)
     print("EXCAVATION JOB CREATION COMPLETE")
     print(f"  JET Job: {job_ids['jet']}")
     print(f"  Re-evaluate Job: {job_ids['reeval']}")
     print(f"  Final Payment Job: {job_ids['final']}")
-    print(f"  Emails sent: {emails_sent}")
     if closest_excavator:
         print(f"  Recommended excavator: {closest_excavator['name']} ({closest_excavator['distance']:.1f} mi)")
+        print(f"  Excavator email: {closest_excavator.get('email') or 'NOT SET'}")
+    print(f"  Emails sent: {len(emails_sent_list)}")
+    for email_info in emails_sent_list:
+        print(f"    - {email_info['type']}: {email_info['to']}")
     print(f"  Recommendation note: {'Posted' if recommendation_posted else 'Not posted'}")
     print("=" * 70 + "\n")
 
@@ -1888,7 +2103,8 @@ Linked Jobs:
         "jet_job_id": job_ids["jet"],
         "reeval_job_id": job_ids["reeval"],
         "final_payment_job_id": job_ids["final"],
-        "emails_sent": emails_sent,
+        "emails_sent": len(emails_sent_list),
+        "emails_sent_to": emails_sent_list,
         "recommended_excavator": closest_excavator,
         "recommendation_posted": recommendation_posted,
         "message": f"Excavation jobs created: JET #{job_ids['jet']}, Re-eval #{job_ids['reeval']}, Final #{job_ids['final']}"
@@ -2054,13 +2270,20 @@ def create_booking(customer_name, address, phone, email, issue_description,
     # Check if this is an excavation job type - requires special 3-job workflow
     if detected_job_type_id in EXCAVATION_JOB_TYPE_IDS:
         print(f"[ST] Excavation job type detected (ID: {detected_job_type_id}) - using excavation workflow")
+        # Build formatted address for email
+        formatted_addr = f"{parsed_addr['street']}, {parsed_addr['city']}, {parsed_addr['state']} {parsed_addr['zip']}"
+
         excavation_result = create_excavation_jobs(
             customer_id=customer_id,
             location_id=location_id,
             summary=issue_description,
             campaign_id=campaign_id,
             business_unit_id=business_unit_id,
-            appointment_time=appointment_time
+            appointment_time=appointment_time,
+            customer_name=customer_name,
+            customer_email=email,
+            customer_phone=phone,
+            formatted_address=formatted_addr
         )
         # Add customer info to result
         excavation_result["customer_id"] = customer_id

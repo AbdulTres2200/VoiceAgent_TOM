@@ -7,7 +7,7 @@ from app.webhooks import retell_webhook
 from app.webhooks.retell_webhook import is_lead_already_created, mark_lead_created
 from app.services.retell import get_job_id_for_call
 from app.services.servicetitan_notes import post_job_note
-from app.services.servicetitan import test_connection, lookup_customer_by_phone, explore_account, lookup_by_address, fetch_account_config, get_campaign_from_call, get_campaign_details, get_latest_call, get_call_details, test_telecom, get_live_call_campaign, get_zones, get_job_types, get_job_types_from_st, detect_job_type, store_live_call_info, parse_appointment_time, get_business_unit_by_zone, get_business_units_from_st, store_service_area_business_unit, store_service_area_address, store_service_area_bu_by_address, create_lead, get_access_token, TENANT_ID, APP_KEY, clean_phone, create_excavation_jobs, EXCAVATOR_EMAILS_BY_ID
+from app.services.servicetitan import test_connection, lookup_customer_by_phone, explore_account, lookup_by_address, fetch_account_config, get_campaign_from_call, get_campaign_details, get_latest_call, get_call_details, test_telecom, get_live_call_campaign, get_zones, get_job_types, get_job_types_from_st, detect_job_type, store_live_call_info, parse_appointment_time, get_business_unit_by_zone, get_business_units_from_st, store_service_area_business_unit, store_service_area_address, store_service_area_bu_by_address, create_lead, get_access_token, TENANT_ID, APP_KEY, clean_phone, create_excavation_jobs, EXCAVATOR_EMAILS_BY_ID, send_excavation_email
 from app.services.service_area import check_service_area, get_service_area_zips, preload_service_area_cache
 
 load_dotenv()
@@ -1194,11 +1194,14 @@ async def test_technicians():
 
 
 @app.get("/test-excavation")
-async def test_excavation():
+async def test_excavation(customer_email: str = None):
     """
     Test excavation job creation workflow.
-    Creates 3 jobs (JET, Re-evaluate, Final Payment) and sends email notification.
+    Creates 3 jobs (JET, Re-evaluate, Final Payment) and sends email notifications.
     Uses existing test customer.
+
+    Query params:
+        customer_email: Optional email for customer thank you email (default: none)
     """
     result = create_excavation_jobs(
         customer_id=1811510751,  # Existing test customer
@@ -1206,8 +1209,57 @@ async def test_excavation():
         summary="Excavation needed - pipe burst outside",
         campaign_id=1410706053,
         business_unit_id=1239,
-        appointment_time="morning window 8-12"
+        appointment_time="morning window 8-12",
+        customer_name="Test Customer",
+        customer_email=customer_email,
+        customer_phone="4121234567",
+        formatted_address="100 Ross Street, Pittsburgh, PA 15219"
     )
+    return result
+
+
+@app.get("/test-email")
+async def test_email(to: str = None):
+    """
+    Test excavation email sending with dummy data.
+
+    Query params:
+        to: Optional email address to send to. If not provided, uses EXCAVATION_TEAM_EMAILS.
+    """
+    # Determine recipients
+    from app.services.servicetitan import EXCAVATION_TEAM_EMAILS
+    if to:
+        recipients = [to]
+    else:
+        recipients = EXCAVATION_TEAM_EMAILS.copy()
+
+    print(f"\n[Email Test] Attempting to send to {recipients}")
+
+    # Call send_excavation_email with dummy test data
+    result = send_excavation_email(
+        customer_name="Test Customer",
+        formatted_address="100 Ross Street, Pittsburgh, PA 15219",
+        phone="4121234567",
+        customer_email="test@example.com",
+        issue_description="Test excavation - collapsed sewer line",
+        appointment_time="morning window 8-12",
+        city="Pittsburgh",
+        jet_job_id=9999999,
+        reeval_job_id=9999998,
+        final_job_id=9999997,
+        technician_name="840 Christopher Billings",
+        technician_distance=6.5,
+        technician_status="Idle",
+        recipients=recipients
+    )
+
+    # Log result
+    if result["status"] == "success":
+        print(f"[Email Test] Result: success")
+    else:
+        print(f"[Email Test] Result: failed")
+        print(f"[Email Test] Error: {result.get('error')}")
+
     return result
 
 

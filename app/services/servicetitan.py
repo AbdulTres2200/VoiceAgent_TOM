@@ -2234,38 +2234,54 @@ def create_booking(customer_name, address, phone, email, issue_description,
     if email and "@" in email:
         contacts.append({"type": "Email", "value": email, "memo": customer_name})
 
-    # Step 1a - Create Customer
-    print("[ST] Step 1a - Creating customer...")
-    customer_payload = {
-        "name": customer_name,
-        "type": customer_type,
-        "address": address_obj,
-        "contacts": contacts,
-        "locations": [
-            {
-                "name": customer_name,
-                "address": address_obj,
-                "contacts": contacts
-            }
-        ]
-    }
-    print(f"[ST] Customer payload: {json.dumps(customer_payload)}")
-    
-    r = requests.post(
-        f"https://api.servicetitan.io/crm/v2/tenant/{TENANT_ID}/customers",
-        headers=headers,
-        json=customer_payload
+    # Step 0 - Search for existing customer by address
+    print("[ST] Step 0 - Searching for existing customer by address...")
+    existing_customer = lookup_customer_by_address(
+        street=parsed_addr["street"],
+        city=parsed_addr["city"],
+        state=parsed_addr["state"],
+        zip_code=parsed_addr["zip"]
     )
-    print(f"[ST] Customer response {r.status_code}: {r.text}")
-    
-    if r.status_code not in (200, 201):
-        return {"status": "error", "failed_step": "1a", "step_name": "Create Customer", 
-                "error": r.text, "status_code": r.status_code}
-    
-    customer_data = r.json()
-    customer_id = customer_data["id"]
-    location_id = customer_data["locations"][0]["id"]
-    print(f"[ST] Customer ID: {customer_id}, Location ID: {location_id}")
+
+    if existing_customer.get("found"):
+        # Use existing customer - skip Step 1a
+        customer_id = existing_customer["customer_id"]
+        location_id = existing_customer["location_id"]
+        print(f"[ST] Using existing customer ID: {customer_id}, Location ID: {location_id}")
+    else:
+        # Step 1a - Create Customer
+        print("[ST] No existing customer found by address, creating new...")
+        print("[ST] Step 1a - Creating customer...")
+        customer_payload = {
+            "name": customer_name,
+            "type": customer_type,
+            "address": address_obj,
+            "contacts": contacts,
+            "locations": [
+                {
+                    "name": customer_name,
+                    "address": address_obj,
+                    "contacts": contacts
+                }
+            ]
+        }
+        print(f"[ST] Customer payload: {json.dumps(customer_payload)}")
+
+        r = requests.post(
+            f"https://api.servicetitan.io/crm/v2/tenant/{TENANT_ID}/customers",
+            headers=headers,
+            json=customer_payload
+        )
+        print(f"[ST] Customer response {r.status_code}: {r.text}")
+
+        if r.status_code not in (200, 201):
+            return {"status": "error", "failed_step": "1a", "step_name": "Create Customer",
+                    "error": r.text, "status_code": r.status_code}
+
+        customer_data = r.json()
+        customer_id = customer_data["id"]
+        location_id = customer_data["locations"][0]["id"]
+        print(f"[ST] Customer ID: {customer_id}, Location ID: {location_id}")
 
     # Check if this is an excavation job type - requires special 3-job workflow
     if detected_job_type_id in EXCAVATION_JOB_TYPE_IDS:
@@ -2810,6 +2826,60 @@ FOLLOWUP_DAYS options: 0 (today), 1 (tomorrow), 2, 3, 5, 7"""
     else:
         print(f"\n[Lead] FAILED to create lead: {resp.text}")
         return None
+
+
+def lookup_customer_by_address(street: str, city: str, state: str, zip_code: str):
+    """
+    Look up an existing customer in ServiceTitan CRM by address.
+    Searches locations to find a matching customer.
+    Returns customerId and locationId if found.
+    """
+    print(f"[ST] Looking up customer by address: {street}, {city}, {state} {zip_code}")
+
+    access_token = get_access_token()
+
+    headers = {
+        "Authorization": f"Bearer {access_token}",
+        "ST-App-Key": APP_KEY
+    }
+
+    # Search locations by address components
+    url = f"https://api.servicetitan.io/crm/v2/tenant/{TENANT_ID}/locations"
+    params = {
+        "street": street,
+        "city": city,
+        "state": state,
+        "zip": zip_code,
+        "pageSize": 5
+    }
+
+    response = requests.get(url, headers=headers, params=params)
+
+    if response.status_code != 200:
+        print(f"[ST] Location lookup failed: {response.status_code} - {response.text}")
+        return {"found": False, "error": response.text}
+
+    locations = response.json().get("data", [])
+
+    if not locations:
+        print(f"[ST] No existing customer found by address")
+        return {"found": False}
+
+    # Use the first matching location
+    location = locations[0]
+    customer_id = location.get("customerId")
+    location_id = location.get("id")
+    customer_name = location.get("name", "Unknown")
+
+    print(f"[ST] Found existing customer by address: {customer_name} (ID: {customer_id}), Location: {location_id}")
+
+    return {
+        "found": True,
+        "customer_id": customer_id,
+        "location_id": location_id,
+        "customer_name": customer_name,
+        "location_data": location
+    }
 
 
 def lookup_customer_by_phone(phone: str):

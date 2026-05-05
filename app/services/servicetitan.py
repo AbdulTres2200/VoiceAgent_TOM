@@ -888,7 +888,9 @@ def get_job_types_from_st():
         return []
 
 
-def detect_job_type(issue_description: str, customer_type: str = "Residential"):
+def detect_job_type(issue_description: str, customer_type: str = "Residential",
+                    is_emergency: bool = False, is_excavation: bool = False,
+                    appointment_info: str = None):
     """
     Use OpenAI to detect the best job type for a given issue description.
     Returns {job_type_id, job_type_name, priority, job_category}.
@@ -896,6 +898,9 @@ def detect_job_type(issue_description: str, customer_type: str = "Residential"):
     Args:
         issue_description: The customer's issue description
         customer_type: "Residential" or "Commercial" - affects job type selection
+        is_emergency: Whether customer indicated this is an emergency
+        is_excavation: Whether Sarah flagged this as excavation work
+        appointment_info: Appointment window chosen (e.g., "tomorrow afternoon 12-4")
     """
     global _job_type_detection_cache
     import re
@@ -963,6 +968,9 @@ def detect_job_type(issue_description: str, customer_type: str = "Residential"):
 
     print(f"[Job Type] Issue: {issue_description}")
     print(f"[Job Type] Customer Type: {customer_type}")
+    print(f"[Job Type] Is Emergency: {is_emergency}")
+    print(f"[Job Type] Is Excavation: {is_excavation}")
+    print(f"[Job Type] Appointment: {appointment_info or 'Not specified'}")
     print(f"[Job Type] Analyzing with OpenAI...")
 
     # Build customer type note for OpenAI
@@ -971,6 +979,13 @@ def detect_job_type(issue_description: str, customer_type: str = "Residential"):
         customer_type_note = "\n\nIMPORTANT: This is a COMMERCIAL customer. Only use commercial job types (starting with C like CP1, CP2, CS1, CS2, CCL, CWH)."
     else:
         customer_type_note = "\n\nIMPORTANT: This is a RESIDENTIAL customer. Do NOT use commercial job types (those starting with C like CS2, CP2). Use residential types like S2, P2, WH1, etc."
+
+    # Build context note
+    context_note = ""
+    if is_excavation:
+        context_note = "\n\nNOTE: This has been flagged as EXCAVATION work. Use excavation job types (S1 Main Line, EXS, etc.)."
+    elif not is_emergency and appointment_info:
+        context_note = f"\n\nNOTE: Customer scheduled for {appointment_info} (NOT an emergency). Use appropriate non-emergency job type."
 
     try:
         from openai import OpenAI
@@ -987,12 +1002,32 @@ def detect_job_type(issue_description: str, customer_type: str = "Residential"):
 
 IMPORTANT: Respond with ONLY the job type CODE (like WH1, S2, Pump1, GAS1, P2 Minor Plumbing), not the description.
 
-Classification rules:
+CRITICAL CLASSIFICATION RULES:
+
+S1 Main Line (ONLY for main sewer issues - requires excavation assessment):
+- MULTIPLE drains backing up throughout the house
+- Basement FLOOR DRAIN backing up with sewage
+- Sewage coming up from floor/ground
+- Main sewer line issues affecting whole house
+- Keywords: "main line", "main sewer", "all drains", "basement floor drain", "sewage backup in basement"
+
+S2 Secondary Drain (for SINGLE fixture drains - NO excavation):
+- ONE drain clogged: washer, sink, tub, shower, toilet
+- Water behind/under ONE appliance (washer, dishwasher)
+- Single fixture backup or slow drain
+- "Washer drain", "kitchen sink", "bathroom sink", "shower drain"
+- Keywords: "behind washer", "under washer", "one drain", "single drain"
+
+COMMON MISCLASSIFICATIONS TO AVOID:
+- "Water behind washer" = S2 (NOT S1) - it's a single fixture
+- "Washer drain clog" = S2 (NOT S1) - it's a secondary drain
+- "Sink not draining" = S2 (NOT S1) - it's a single fixture
+- Only use S1 when MULTIPLE drains or MAIN sewer line is mentioned
+
+Other classifications:
 - Water heater not working/no hot water -> WH1
 - Water heater leaking -> WH2
 - Water heater estimate -> WH3
-- Main sewer/basement drain/multiple drains backing up -> S1 Main Line
-- Single drain (sink, tub, shower) clog -> S2 Secondary Drain
 - Gas smell/gas leak/gas line issues -> GAS1
 - Sump pump or sewage pump -> Pump1
 - Well pump -> Pump2
@@ -1006,7 +1041,7 @@ Classification rules:
 
 Job type codes:
 {formatted_list}
-Reply with ONLY the code (e.g., WH1, S2, Pump1).{customer_type_note}"""
+Reply with ONLY the code (e.g., WH1, S2, Pump1).{customer_type_note}{context_note}"""
                 }
             ]
         )
@@ -2206,8 +2241,22 @@ def create_booking(customer_name, address, phone, email, issue_description,
         detected_job_type_id = job_type_result["job_type_id"]
         detected_priority = job_type_result["priority"]
     else:
-        # Detect job type from issue description using AI (pass customer_type for commercial preference)
-        job_type_result = detect_job_type(issue_description, customer_type)
+        # Normalize is_emergency for detection
+        is_emergency_bool = False
+        if is_emergency is not None:
+            if isinstance(is_emergency, bool):
+                is_emergency_bool = is_emergency
+            elif isinstance(is_emergency, str):
+                is_emergency_bool = is_emergency.lower() in ("true", "yes", "1")
+
+        # Detect job type from issue description using AI (pass full context)
+        job_type_result = detect_job_type(
+            issue_description=issue_description,
+            customer_type=customer_type,
+            is_emergency=is_emergency_bool,
+            is_excavation=is_excavation_bool,
+            appointment_info=appointment_time
+        )
         detected_job_type_id = job_type_result["job_type_id"]
         detected_priority = job_type_result["priority"]
     print(f"[ST] Using job_type_id: {detected_job_type_id}, priority: {detected_priority}")

@@ -2294,6 +2294,9 @@ def create_booking(customer_name, address, phone, email, issue_description,
                 location_id = existing_customer["location_id"]
                 need_create_customer = False
                 print(f"[ST] Using existing customer ID: {customer_id}, Location ID: {location_id}")
+                # Update contacts if phone/email provided differs from existing
+                if phone or email:
+                    update_customer_contacts(customer_id, phone, email, customer_name, headers)
             else:
                 print(f"[ST] Name mismatch! Provided: '{customer_name}', Existing: '{existing_name}'")
                 print(f"[ST] Will create new customer at this address")

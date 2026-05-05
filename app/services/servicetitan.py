@@ -2293,10 +2293,52 @@ def create_booking(customer_name, address, phone, email, issue_description,
 
     # Check if existing customer ID was provided (from inbound lookup)
     if existing_customer_id and existing_location_id:
-        # Use the customer ID from inbound webhook lookup - skip Step 0 and Step 1a
-        customer_id = existing_customer_id
-        location_id = existing_location_id
-        print(f"[ST] Using existing customer from inbound lookup: ID {customer_id}, Location {location_id}")
+        # Verify the name matches before using existing customer
+        # This prevents booking under wrong customer when caller gives different name
+        print(f"[ST] Existing customer ID provided: {existing_customer_id}")
+        print(f"[ST] Verifying name match with provided name: {customer_name}")
+
+        # Fetch existing customer's name
+        existing_cust_url = f"https://api.servicetitan.io/crm/v2/tenant/{TENANT_ID}/customers/{existing_customer_id}"
+        existing_cust_resp = requests.get(existing_cust_url, headers=headers)
+
+        use_existing = False
+        if existing_cust_resp.status_code == 200:
+            existing_cust_data = existing_cust_resp.json()
+            existing_name = existing_cust_data.get("name", "")
+            print(f"[ST] Existing customer name: {existing_name}")
+
+            # Compare names (case-insensitive, normalize spaces)
+            name1 = ' '.join(customer_name.lower().split())
+            name2 = ' '.join(existing_name.lower().split())
+
+            # Check if names match (exact, contains, or first name match)
+            if name1 == name2:
+                use_existing = True
+                print(f"[ST] Names match exactly")
+            elif name1 in name2 or name2 in name1:
+                use_existing = True
+                print(f"[ST] Names partially match (one contains the other)")
+            elif name1.split() and name2.split() and name1.split()[0] == name2.split()[0]:
+                use_existing = True
+                print(f"[ST] First names match")
+            else:
+                # Check for typos (1-2 char difference in similar length names)
+                if abs(len(name1) - len(name2)) <= 2:
+                    diff_count = sum(1 for a, b in zip(name1, name2) if a != b)
+                    if diff_count <= 2:
+                        use_existing = True
+                        print(f"[ST] Names are similar (minor typo)")
+
+        if use_existing:
+            customer_id = existing_customer_id
+            location_id = existing_location_id
+            print(f"[ST] Using existing customer from inbound lookup: ID {customer_id}, Location {location_id}")
+        else:
+            print(f"[ST] Name mismatch! Provided: '{customer_name}', Existing: '{existing_name}'")
+            print(f"[ST] Will create new customer instead of using existing")
+            existing_customer_id = None
+            existing_location_id = None
     else:
         # Step 0 - Search for existing customer by address
         print("[ST] Step 0 - Searching for existing customer by address...")
@@ -2308,10 +2350,40 @@ def create_booking(customer_name, address, phone, email, issue_description,
         )
 
         if existing_customer.get("found"):
-            # Use existing customer - skip Step 1a
-            customer_id = existing_customer["customer_id"]
-            location_id = existing_customer["location_id"]
-            print(f"[ST] Using existing customer ID: {customer_id}, Location ID: {location_id}")
+            # Check if name matches before using existing customer
+            existing_name = existing_customer.get("customer_name", "")
+            print(f"[ST] Found existing customer by address: {existing_name}")
+            print(f"[ST] Comparing with provided name: {customer_name}")
+
+            # Compare names (case-insensitive, normalize spaces)
+            name1 = ' '.join(customer_name.lower().split())
+            name2 = ' '.join(existing_name.lower().split())
+
+            use_existing = False
+            if name1 == name2:
+                use_existing = True
+                print(f"[ST] Names match exactly")
+            elif name1 in name2 or name2 in name1:
+                use_existing = True
+                print(f"[ST] Names partially match")
+            elif name1.split() and name2.split() and name1.split()[0] == name2.split()[0]:
+                use_existing = True
+                print(f"[ST] First names match")
+            else:
+                # Check for typos
+                if abs(len(name1) - len(name2)) <= 2:
+                    diff_count = sum(1 for a, b in zip(name1, name2) if a != b)
+                    if diff_count <= 2:
+                        use_existing = True
+                        print(f"[ST] Names are similar (minor typo)")
+
+            if use_existing:
+                customer_id = existing_customer["customer_id"]
+                location_id = existing_customer["location_id"]
+                print(f"[ST] Using existing customer ID: {customer_id}, Location ID: {location_id}")
+            else:
+                print(f"[ST] Name mismatch! Provided: '{customer_name}', Existing: '{existing_name}'")
+                print(f"[ST] Creating new customer at this address")
         else:
             # Step 1a - Create Customer
             print("[ST] No existing customer found by address, creating new...")

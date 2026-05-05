@@ -117,22 +117,17 @@ _POSTCALL_CACHE_TTL = 300  # 5 minutes - prevent duplicate processing
 @app.post("/inbound-webhook")
 async def inbound_webhook(request: Request):
     """
-    Retell AI inbound call webhook.
-    Receives call payload, looks up caller in ServiceTitan CRM,
-    and returns dynamic variables for the AI agent.
+    Retell AI inbound call webhook - FAST response, no slow lookups.
+    Customer lookup happens later via lookup_by_address during the call.
 
-    Returns: caller_number, campaign_id, campaign_name, business_unit_id, business_unit_name,
-             customer_name, customer_address, customer_found, recent_job, to_number
+    Returns: caller_number, to_number, is_bill_guntrum (minimal for speed)
     """
-    import asyncio
-    import concurrent.futures
-
     data = await request.json()
 
     # Retell sends data under "call" or "call_inbound" depending on event type
     call_data = data.get("call", {}) or data.get("call_inbound", {})
 
-    # Get from_number and to_number from Retell payload - try multiple locations
+    # Get from_number and to_number from Retell payload
     from_number = (
         call_data.get("from_number") or
         call_data.get("caller_number") or
@@ -146,143 +141,38 @@ async def inbound_webhook(request: Request):
         ""
     )
 
-    # Check deduplication cache
-    cache_key = f"{from_number}:{to_number}"
-    now = time.time()
-    if cache_key in _inbound_cache:
-        cached_time, cached_response = _inbound_cache[cache_key]
-        if now - cached_time < _INBOUND_CACHE_TTL:
-            print(f"[Inbound Webhook] Returning cached response for {from_number} (age: {now - cached_time:.1f}s)")
-            return cached_response
-
-    # Clean phone number based on country code:
-    # - +92 (Pakistan): strip + only -> 923343060393
-    # - +1 (US): strip +1 -> 10 digit number
-    # - Otherwise: strip + only
+    # Clean phone number
     cleaned_from_number = from_number.replace("-", "").replace(" ", "").replace("(", "").replace(")", "")
     if cleaned_from_number.startswith("+1"):
-        cleaned_from_number = cleaned_from_number[2:]  # Strip +1
+        cleaned_from_number = cleaned_from_number[2:]
     elif cleaned_from_number.startswith("+"):
-        cleaned_from_number = cleaned_from_number[1:]  # Strip + only
+        cleaned_from_number = cleaned_from_number[1:]
 
-    # For ServiceTitan lookup, use the 10-digit version
     clean_phone = cleaned_from_number[-10:] if len(cleaned_from_number) >= 10 else cleaned_from_number
 
     # Bill Guntrum detection - excavation department head
     BILL_GUNTRUM_PHONE = "7242571514"
     is_bill_guntrum = clean_phone == BILL_GUNTRUM_PHONE
 
-    # Cache the to_number for this caller
+    # Cache the to_number for this caller (for campaign lookup during booking)
     if from_number and to_number:
         store_live_call_info(from_number, to_number)
 
-    # Look up customer in ServiceTitan (with timeout)
-    result = {"found": False}
-    if clean_phone and len(clean_phone) >= 10:
-        try:
-            loop = asyncio.get_event_loop()
-            with concurrent.futures.ThreadPoolExecutor() as executor:
-                result = await asyncio.wait_for(
-                    loop.run_in_executor(executor, lookup_customer_by_phone, clean_phone),
-                    timeout=8.0
-                )
-        except asyncio.TimeoutError:
-            pass
-        except Exception:
-            pass
-
-    # Look up campaign info from to_number
-    campaign_id = ""
-    campaign_name = ""
-    business_unit_id = ""
-    business_unit_name = ""
-
-    if to_number:
-        campaign_info = get_live_call_campaign(from_number, to_number)
-        if campaign_info:
-            campaign_id = str(campaign_info.get("campaign_id", "")) if campaign_info.get("campaign_id") else ""
-            campaign_name = campaign_info.get("campaign_name", "") or ""
-            business_unit_id = str(campaign_info.get("business_unit_id", "")) if campaign_info.get("business_unit_id") else ""
-            business_unit_name = campaign_info.get("business_unit_name", "") or ""
-
-    # Build dynamic variables
+    # Build minimal dynamic variables for fast response
+    # Customer lookup happens later via lookup_by_address during the call
     dynamic_vars = {
         "to_number": to_number,
         "caller_number": cleaned_from_number,
         "is_bill_guntrum": "true" if is_bill_guntrum else "false"
     }
 
-    # Add campaign/business unit info (only if we have values)
-    if campaign_id:
-        dynamic_vars["campaign_id"] = campaign_id
-    if campaign_name:
-        dynamic_vars["campaign_name"] = campaign_name
-    if business_unit_id:
-        dynamic_vars["business_unit_id"] = business_unit_id
-    if business_unit_name:
-        dynamic_vars["business_unit_name"] = business_unit_name
-
-    if result.get("found"):
-        customer = result.get("customer", {})
-        address = customer.get("address", {})
-        recent_jobs = result.get("recent_jobs", [])
-        customer_id = customer.get("id")
-
-        # Fetch customer locations from ServiceTitan
-        locations = []
-        if customer_id:
-            try:
-                import requests
-                token = get_access_token()
-                headers = {
-                    "Authorization": f"Bearer {token}",
-                    "ST-App-Key": APP_KEY
-                }
-                loc_url = f"https://api.servicetitan.io/crm/v2/tenant/{TENANT_ID}/locations"
-                loc_resp = requests.get(loc_url, headers=headers, params={"customerId": customer_id, "pageSize": 1}, timeout=5)
-                if loc_resp.status_code == 200:
-                    locations = loc_resp.json().get("data", [])
-            except Exception:
-                pass
-
-        # Format address
-        address_str = f"{address.get('street', '')} {address.get('city', '')}".strip()
-
-        # Format recent job
-        recent_job_str = ""
-        if recent_jobs:
-            job = recent_jobs[0]
-            recent_job_str = f"{job.get('summary', 'N/A')} - {job.get('status', 'N/A')}"
-
-        dynamic_vars.update({
-            "customer_name": customer.get("name", ""),
-            "customer_address": address_str,
-            "customer_found": "true",
-            "customer_id": str(customer_id) if customer_id else "",
-            "location_id": str(locations[0].get("id", "")) if locations else "",
-            "recent_job": recent_job_str
-        })
-    else:
-        dynamic_vars.update({
-            "customer_name": "",
-            "customer_address": "",
-            "customer_found": "false",
-            "recent_job": ""
-        })
-
-    # Simple inbound log
-    cust_name = dynamic_vars.get("customer_name", "Unknown")
-    cust_found = dynamic_vars.get("customer_found", "false")
-    print(f"[Inbound] {from_number} | Found: {cust_found} | {cust_name}")
+    print(f"[Inbound] {from_number} | Fast response (no lookup)")
 
     response = {
         "call_inbound": {
             "dynamic_variables": dynamic_vars
         }
     }
-
-    # Cache the response for deduplication
-    _inbound_cache[cache_key] = (now, response)
 
     return response
 

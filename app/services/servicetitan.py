@@ -2116,7 +2116,7 @@ def create_booking(customer_name, address, phone, email, issue_description,
                    customer_type, is_homeowner=None, promotional_emails=None,
                    contact_preference=None, alternate_phone=None,
                    campaign_id=None, business_unit_id=None, is_emergency=None,
-                   is_excavation=None):
+                   is_excavation=None, existing_customer_id=None, existing_location_id=None):
 
     token = get_access_token()
 
@@ -2234,54 +2234,61 @@ def create_booking(customer_name, address, phone, email, issue_description,
     if email and "@" in email:
         contacts.append({"type": "Email", "value": email, "memo": customer_name})
 
-    # Step 0 - Search for existing customer by address
-    print("[ST] Step 0 - Searching for existing customer by address...")
-    existing_customer = lookup_customer_by_address(
-        street=parsed_addr["street"],
-        city=parsed_addr["city"],
-        state=parsed_addr["state"],
-        zip_code=parsed_addr["zip"]
-    )
-
-    if existing_customer.get("found"):
-        # Use existing customer - skip Step 1a
-        customer_id = existing_customer["customer_id"]
-        location_id = existing_customer["location_id"]
-        print(f"[ST] Using existing customer ID: {customer_id}, Location ID: {location_id}")
+    # Check if existing customer ID was provided (from inbound lookup)
+    if existing_customer_id and existing_location_id:
+        # Use the customer ID from inbound webhook lookup - skip Step 0 and Step 1a
+        customer_id = existing_customer_id
+        location_id = existing_location_id
+        print(f"[ST] Using existing customer from inbound lookup: ID {customer_id}, Location {location_id}")
     else:
-        # Step 1a - Create Customer
-        print("[ST] No existing customer found by address, creating new...")
-        print("[ST] Step 1a - Creating customer...")
-        customer_payload = {
-            "name": customer_name,
-            "type": customer_type,
-            "address": address_obj,
-            "contacts": contacts,
-            "locations": [
-                {
-                    "name": customer_name,
-                    "address": address_obj,
-                    "contacts": contacts
-                }
-            ]
-        }
-        print(f"[ST] Customer payload: {json.dumps(customer_payload)}")
-
-        r = requests.post(
-            f"https://api.servicetitan.io/crm/v2/tenant/{TENANT_ID}/customers",
-            headers=headers,
-            json=customer_payload
+        # Step 0 - Search for existing customer by address
+        print("[ST] Step 0 - Searching for existing customer by address...")
+        existing_customer = lookup_customer_by_address(
+            street=parsed_addr["street"],
+            city=parsed_addr["city"],
+            state=parsed_addr["state"],
+            zip_code=parsed_addr["zip"]
         )
-        print(f"[ST] Customer response {r.status_code}: {r.text}")
 
-        if r.status_code not in (200, 201):
-            return {"status": "error", "failed_step": "1a", "step_name": "Create Customer",
-                    "error": r.text, "status_code": r.status_code}
+        if existing_customer.get("found"):
+            # Use existing customer - skip Step 1a
+            customer_id = existing_customer["customer_id"]
+            location_id = existing_customer["location_id"]
+            print(f"[ST] Using existing customer ID: {customer_id}, Location ID: {location_id}")
+        else:
+            # Step 1a - Create Customer
+            print("[ST] No existing customer found by address, creating new...")
+            print("[ST] Step 1a - Creating customer...")
+            customer_payload = {
+                "name": customer_name,
+                "type": customer_type,
+                "address": address_obj,
+                "contacts": contacts,
+                "locations": [
+                    {
+                        "name": customer_name,
+                        "address": address_obj,
+                        "contacts": contacts
+                    }
+                ]
+            }
+            print(f"[ST] Customer payload: {json.dumps(customer_payload)}")
 
-        customer_data = r.json()
-        customer_id = customer_data["id"]
-        location_id = customer_data["locations"][0]["id"]
-        print(f"[ST] Customer ID: {customer_id}, Location ID: {location_id}")
+            r = requests.post(
+                f"https://api.servicetitan.io/crm/v2/tenant/{TENANT_ID}/customers",
+                headers=headers,
+                json=customer_payload
+            )
+            print(f"[ST] Customer response {r.status_code}: {r.text}")
+
+            if r.status_code not in (200, 201):
+                return {"status": "error", "failed_step": "1a", "step_name": "Create Customer",
+                        "error": r.text, "status_code": r.status_code}
+
+            customer_data = r.json()
+            customer_id = customer_data["id"]
+            location_id = customer_data["locations"][0]["id"]
+            print(f"[ST] Customer ID: {customer_id}, Location ID: {location_id}")
 
     # Check if this is an excavation job type - requires special 3-job workflow
     if detected_job_type_id in EXCAVATION_JOB_TYPE_IDS:

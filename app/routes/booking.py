@@ -106,6 +106,24 @@ async def book_appointment(request: Request):
     # is_excavation - if true, skip job type detection and use excavation workflow
     is_excavation = args.get('is_excavation', False)
 
+    # Existing customer ID from inbound lookup (skip customer creation if provided)
+    existing_customer_id = args.get('customer_id') or args.get('existing_customer_id')
+    existing_location_id = args.get('location_id') or args.get('existing_location_id')
+
+    # Convert to int if provided as string
+    if existing_customer_id:
+        try:
+            existing_customer_id = int(existing_customer_id)
+            print(f"[Booking] Using existing customer ID from Retell: {existing_customer_id}")
+        except (ValueError, TypeError):
+            existing_customer_id = None
+    if existing_location_id:
+        try:
+            existing_location_id = int(existing_location_id)
+            print(f"[Booking] Using existing location ID from Retell: {existing_location_id}")
+        except (ValueError, TypeError):
+            existing_location_id = None
+
     # Get to_number from Retell (passed as dynamic variable from inbound webhook)
     to_number = args.get('to_number') or data.get('to_number')
 
@@ -165,6 +183,8 @@ async def book_appointment(request: Request):
         print(f"║  Business Unit ID : {bu_display:<40} ║")
         print(f"║  Retell Call ID   : {str(call_id or 'Not provided'):<40} ║")
         print(f"║  Is Excavation    : {str(is_excavation):<40} ║")
+        print(f"║  Existing Cust ID : {str(existing_customer_id or 'None'):<40} ║")
+        print(f"║  Existing Loc ID  : {str(existing_location_id or 'None'):<40} ║")
         print("╠══════════════════════════════════════════════════════════════╣")
         print(f"║  Received at      : {timestamp:<40} ║")
         print("╚══════════════════════════════════════════════════════════════╝")
@@ -190,7 +210,9 @@ async def book_appointment(request: Request):
         campaign_id=campaign_id,
         business_unit_id=business_unit_id,
         is_emergency=is_emergency,
-        is_excavation=is_excavation
+        is_excavation=is_excavation,
+        existing_customer_id=existing_customer_id,
+        existing_location_id=existing_location_id
     )
 
     # Create confirmation message for Retell to read back

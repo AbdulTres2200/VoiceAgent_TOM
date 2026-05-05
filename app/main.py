@@ -247,6 +247,8 @@ async def inbound_webhook(request: Request):
             "customer_name": customer.get("name", ""),
             "customer_address": address_str,
             "customer_found": "true",
+            "customer_id": str(customer.get("id", "")),
+            "location_id": str(locations[0].get("id", "")) if locations else "",
             "recent_job": recent_job_str
         })
     else:

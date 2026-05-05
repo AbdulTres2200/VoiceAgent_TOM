@@ -3087,41 +3087,6 @@ def lookup_by_address(address: str):
     if response.status_code == 200:
         locations = response.json().get("data", [])
 
-    # If no results, try geocoding with Google and matching by lat/lng
-    if not locations and zip_code:
-        print(f"[ServiceTitan] Trying Google geocode match for: {address}")
-        from app.services.service_area import parse_address_google
-        import os
-
-        google_api_key = os.getenv("GOOGLE_MAPS_API_KEY")
-        search_geo = parse_address_google(address, google_api_key)
-
-        if search_geo.get("lat") and search_geo.get("lng"):
-            search_lat = search_geo["lat"]
-            search_lng = search_geo["lng"]
-            print(f"[ServiceTitan] Search address geocoded: ({search_lat}, {search_lng})")
-
-            # Get all locations in zip code
-            response = requests.get(url, headers=headers, params={"zip": zip_code, "pageSize": 50})
-            if response.status_code == 200:
-                all_locations = response.json().get("data", [])
-
-                for loc in all_locations:
-                    loc_addr = loc.get("address", {})
-                    # Build full address string for geocoding
-                    loc_addr_str = f"{loc_addr.get('street', '')}, {loc_addr.get('city', '')}, {loc_addr.get('state', '')} {loc_addr.get('zip', '')}"
-
-                    loc_geo = parse_address_google(loc_addr_str, google_api_key)
-                    if loc_geo.get("lat") and loc_geo.get("lng"):
-                        # Calculate distance (simple approximation)
-                        lat_diff = abs(search_lat - loc_geo["lat"])
-                        lng_diff = abs(search_lng - loc_geo["lng"])
-                        # Roughly 0.001 degree = 111 meters
-                        if lat_diff < 0.001 and lng_diff < 0.001:
-                            print(f"[ServiceTitan] Geocode match found: {loc_addr.get('street')}")
-                            locations.append(loc)
-                            break
-
     if not locations:
         print(f"[ServiceTitan] No customer found for address: {address}")
         return {"found": False, "message": "No customer found with this address"}

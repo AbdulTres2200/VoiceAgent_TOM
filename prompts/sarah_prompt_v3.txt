@@ -285,4 +285,4 @@ When calling book_appointment, map the collected information as follows:
   - Before transferring say: "Perfect, let me connect you with our team right now."
   - Then immediately call the correct transfer function
   - Do not ask any more questions after initiating transfer
-  
+

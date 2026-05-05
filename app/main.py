@@ -435,6 +435,12 @@ async def check_service_area_endpoint(request: Request):
 
                                 if cust_resp.status_code == 200:
                                     customer = cust_resp.json()
+
+                                    # Skip inactive customers
+                                    if not customer.get("active", True):
+                                        print(f"[CustomerLookup] Skipping inactive customer {customer_id}")
+                                        continue
+
                                     customer_name = customer.get("name", "")
                                     formatted_addr = f"{loc_addr.get('street', '')}, {loc_addr.get('city', '')}, {loc_addr.get('state', '')} {loc_addr.get('zip', '')}"
 

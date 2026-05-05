@@ -2243,6 +2243,10 @@ def create_booking(customer_name, address, phone, email, issue_description,
             location_id = existing_location_id
             need_create_customer = False
             print(f"[ST] Using existing customer from inbound lookup: ID {customer_id}, Location {location_id}")
+
+            # Update customer contacts if new phone/email provided
+            if phone or email:
+                update_customer_contacts(customer_id, phone, email, customer_name, headers)
         else:
             print(f"[ST] Name mismatch! Provided: '{customer_name}', Existing: '{existing_name}'")
             print(f"[ST] Will create new customer instead of using existing")
@@ -2875,6 +2879,113 @@ FOLLOWUP_DAYS options: 0 (today), 1 (tomorrow), 2, 3, 5, 7"""
     else:
         print(f"\n[Lead] FAILED to create lead: {resp.text}")
         return None
+
+
+def update_customer_contacts(customer_id: int, phone: str, email: str, customer_name: str, headers: dict):
+    """
+    Update existing customer contacts in ServiceTitan.
+    ServiceTitan doesn't support PUT for contacts, so we DELETE the old contact and POST a new one.
+    """
+    if not phone and not email:
+        return
+
+    print(f"[ST] Updating contacts for customer {customer_id}")
+
+    # Get existing contacts
+    contacts_url = f"https://api.servicetitan.io/crm/v2/tenant/{TENANT_ID}/customers/{customer_id}/contacts"
+    contacts_resp = requests.get(contacts_url, headers=headers)
+
+    first_phone_contact = None
+    first_email_contact = None
+
+    if contacts_resp.status_code == 200:
+        contacts = contacts_resp.json().get("data", [])
+        for contact in contacts:
+            if contact.get("type") == "Phone" and not first_phone_contact:
+                first_phone_contact = contact
+            elif contact.get("type") == "Email" and not first_email_contact:
+                first_email_contact = contact
+
+    # Clean provided phone
+    cleaned_phone = clean_phone(phone) if phone else ""
+
+    # Update phone contact (DELETE old + POST new)
+    if cleaned_phone:
+        if first_phone_contact:
+            contact_id = first_phone_contact.get("id")
+            old_value = first_phone_contact.get("value", "")
+            if clean_phone(old_value) != cleaned_phone:
+                print(f"[ST] Replacing phone: {old_value} -> {cleaned_phone}")
+                # Delete old contact
+                delete_url = f"{contacts_url}/{contact_id}"
+                delete_resp = requests.delete(delete_url, headers=headers)
+                if delete_resp.status_code == 200:
+                    print(f"[ST] Deleted old phone contact {contact_id}")
+                    # Add new contact
+                    new_contact = {
+                        "type": "Phone",
+                        "value": cleaned_phone,
+                        "memo": f"Updated by {customer_name}"
+                    }
+                    add_resp = requests.post(contacts_url, headers=headers, json=new_contact)
+                    if add_resp.status_code in (200, 201):
+                        print(f"[ST] Phone contact updated successfully")
+                    else:
+                        print(f"[ST] Failed to add new phone: {add_resp.status_code}")
+                else:
+                    print(f"[ST] Failed to delete old phone: {delete_resp.status_code}")
+            else:
+                print(f"[ST] Phone already matches: {cleaned_phone}")
+        else:
+            # No existing phone, add new one
+            print(f"[ST] No existing phone contact, adding: {cleaned_phone}")
+            new_contact = {
+                "type": "Phone",
+                "value": cleaned_phone,
+                "memo": f"Added by {customer_name}"
+            }
+            add_resp = requests.post(contacts_url, headers=headers, json=new_contact)
+            if add_resp.status_code in (200, 201):
+                print(f"[ST] Phone contact added successfully")
+
+    # Update email contact (DELETE old + POST new)
+    if email and "@" in email:
+        if first_email_contact:
+            contact_id = first_email_contact.get("id")
+            old_value = first_email_contact.get("value", "")
+            if old_value.lower() != email.lower():
+                print(f"[ST] Replacing email: {old_value} -> {email}")
+                # Delete old contact
+                delete_url = f"{contacts_url}/{contact_id}"
+                delete_resp = requests.delete(delete_url, headers=headers)
+                if delete_resp.status_code == 200:
+                    print(f"[ST] Deleted old email contact {contact_id}")
+                    # Add new contact
+                    new_contact = {
+                        "type": "Email",
+                        "value": email,
+                        "memo": f"Updated by {customer_name}"
+                    }
+                    add_resp = requests.post(contacts_url, headers=headers, json=new_contact)
+                    if add_resp.status_code in (200, 201):
+                        print(f"[ST] Email contact updated successfully")
+                    else:
+                        print(f"[ST] Failed to add new email: {add_resp.status_code}")
+                else:
+                    print(f"[ST] Failed to delete old email: {delete_resp.status_code}")
+            else:
+                print(f"[ST] Email already matches: {email}")
+        else:
+            # No existing email, add new one
+            print(f"[ST] No existing email contact, adding: {email}")
+            new_contact = {
+                "type": "Email",
+                "value": email,
+                "memo": f"Added by {customer_name}"
+            }
+            add_resp = requests.post(contacts_url, headers=headers, json=new_contact)
+            if add_resp.status_code in (200, 201):
+                print(f"[ST] Email contact added successfully")
 
 
 def lookup_customer_by_address(street: str, city: str, state: str, zip_code: str):

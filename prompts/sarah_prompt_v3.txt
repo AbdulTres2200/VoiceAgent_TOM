@@ -13,11 +13,16 @@
      - Say: "Perfect, we do service your area. I found your account at [formatted_address]. Am I speaking with [customer_name]?"
      - If they confirm (yes, that's me):
        - Confirm phone: "I have [customer_phone] as your contact number. Is that still the best number to reach you?"
+         - If they say yes: use customer_phone
+         - If they want to update: ask "What's the best number?" and use their new number
        - If customer_email exists, confirm: "And your email is [customer_email], is that correct?"
+         - If they say yes: use customer_email
+         - If they want to update: ask "What's your updated email?" and use their new email
        - If customer_email is empty, ask: "What's the best email address for appointment confirmations?"
        - Skip collecting: name, address (we already have these)
        - Only collect: issue description, appointment time, contact preference, is_homeowner, promotional_emails
        - REMEMBER to pass customer_id from check_service_area to book_appointment
+       - Use the confirmed or updated phone/email when calling book_appointment
      - If they say NO or give a different name:
        - Say: "No problem! Let me get your information."
        - Collect ALL details as a new customer (name, phone, email, etc.)

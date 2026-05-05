@@ -378,43 +378,54 @@ async def check_service_area_endpoint(request: Request):
             zip_code=result.get("zip_code", "")
         )
 
-    # If in service area, also lookup existing customer using Google geocoding
+    # If in service area, also lookup existing customer using normalized street matching
     if result.get("in_service_area"):
-        search_lat = result.get("lat")
-        search_lng = result.get("lng")
+        import re
+        import requests as req
 
-        if search_lat and search_lng:
-            print(f"[CustomerLookup] Searching by geocode: ({search_lat}, {search_lng})")
-            from app.services.service_area import parse_address_google
-            import requests as req
+        # Get normalized street from Google result (e.g., "100 Ross Street")
+        search_street = result.get("street", "").upper()
+        zip_code = result.get("zip_code", "")
 
-            access_token = get_access_token()
-            headers = {
-                "Authorization": f"Bearer {access_token}",
-                "ST-App-Key": APP_KEY
-            }
+        if search_street and zip_code:
+            # Extract street number and name for matching
+            street_match = re.match(r'^(\d+)\s+(.+)', search_street)
+            if street_match:
+                search_number = street_match.group(1)
+                search_name = street_match.group(2)
+                # Normalize: remove ST/STREET/AVE/AVENUE etc
+                search_name_normalized = re.sub(r'\b(STREET|ST|AVENUE|AVE|DRIVE|DR|ROAD|RD|LANE|LN|COURT|CT|PLACE|PL|BOULEVARD|BLVD)\b', '', search_name).strip()
 
-            # Search locations in this zip code
-            zip_code = result.get("zip_code", "")
-            if zip_code:
+                print(f"[CustomerLookup] Searching for: {search_street} in zip {zip_code}")
+
+                access_token = get_access_token()
+                headers = {
+                    "Authorization": f"Bearer {access_token}",
+                    "ST-App-Key": APP_KEY
+                }
+
                 url = f"https://api.servicetitan.io/crm/v2/tenant/{TENANT_ID}/locations"
-                resp = req.get(url, headers=headers, params={"zip": zip_code, "pageSize": 50})
+                # Search by street first (more specific)
+                resp = req.get(url, headers=headers, params={"street": search_street, "zip": zip_code, "pageSize": 10})
 
                 if resp.status_code == 200:
                     all_locations = resp.json().get("data", [])
-                    print(f"[CustomerLookup] Found {len(all_locations)} locations in zip {zip_code}")
+                    print(f"[CustomerLookup] Found {len(all_locations)} locations matching street")
 
                     for loc in all_locations:
                         loc_addr = loc.get("address", {})
-                        loc_addr_str = f"{loc_addr.get('street', '')}, {loc_addr.get('city', '')}, {loc_addr.get('state', '')} {loc_addr.get('zip', '')}"
+                        loc_street = loc_addr.get("street", "").upper()
 
-                        loc_geo = parse_address_google(loc_addr_str, GOOGLE_MAPS_API_KEY)
-                        if loc_geo.get("lat") and loc_geo.get("lng"):
-                            lat_diff = abs(search_lat - loc_geo["lat"])
-                            lng_diff = abs(search_lng - loc_geo["lng"])
-                            # ~0.001 degree = ~111 meters
-                            if lat_diff < 0.001 and lng_diff < 0.001:
-                                # Found matching location - get customer details
+                        # Extract location street number and name
+                        loc_match = re.match(r'^(\d+)\s+(.+)', loc_street)
+                        if loc_match:
+                            loc_number = loc_match.group(1)
+                            loc_name = loc_match.group(2)
+                            loc_name_normalized = re.sub(r'\b(STREET|ST|AVENUE|AVE|DRIVE|DR|ROAD|RD|LANE|LN|COURT|CT|PLACE|PL|BOULEVARD|BLVD)\b', '', loc_name).strip()
+
+                            # Match if: exact street number AND street name matches
+                            if loc_number == search_number and search_name_normalized in loc_name_normalized:
+                                # Found matching location
                                 customer_id = loc.get("customerId")
                                 location_id = loc.get("id")
 
@@ -432,12 +443,12 @@ async def check_service_area_endpoint(request: Request):
                                     result["location_id"] = location_id
                                     result["customer_name"] = customer_name
                                     result["formatted_address"] = formatted_addr.upper()
-                                    print(f"[CustomerLookup] Found: {customer_name} at {loc_addr.get('street')}")
-                                break
+                                    print(f"[CustomerLookup] Match: {customer_name} at {loc_street}")
+                                    break
 
                     if not result.get("found"):
                         result["found"] = False
-                        print(f"[CustomerLookup] No matching customer found")
+                        print(f"[CustomerLookup] No match found")
 
     return result
 

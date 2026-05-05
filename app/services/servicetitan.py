@@ -1135,18 +1135,10 @@ RETELL_BUSINESS_UNIT_NAME = "Western PA"
 def get_live_call_campaign(from_number: str, to_number: str):
     """
     Get campaign info for a live call by matching from/to numbers.
-    Tries telecom API first, then campaigns API, then uses real fallback values.
+    Tries telecom API first, then campaigns API, then uses fallback values.
     """
-    # Clean both numbers
     clean_from = clean_phone(from_number)
     clean_to = clean_phone(to_number)
-
-    print("\n" + "=" * 70)
-    print("                    LIVE CALL CAMPAIGN LOOKUP")
-    print("=" * 70)
-    print(f"  From: {from_number} -> cleaned: {clean_from}")
-    print(f"  To:   {to_number} -> cleaned: {clean_to}")
-    print("=" * 70)
 
     token = get_access_token()
     headers = {
@@ -1154,159 +1146,69 @@ def get_live_call_campaign(from_number: str, to_number: str):
         "ST-App-Key": APP_KEY
     }
 
-    # Method 1: Try telecom API - find call matching to_number
-    print("\n[Method 1] Trying Telecom API...")
-    print(f"  Looking for call where leadCall.to matches: {clean_to}")
+    # Method 1: Try telecom API
     telecom_url = f"https://api.servicetitan.io/telecom/v2/tenant/{TENANT_ID}/calls"
-    params = {
-        "pageSize": 5,
-        "orderBy": "Id",
-        "orderByDirection": "desc",
-        "from": clean_from
-    }
+    params = {"pageSize": 5, "orderBy": "Id", "orderByDirection": "desc", "from": clean_from}
 
     try:
         resp = requests.get(telecom_url, headers=headers, params=params)
-        print(f"  GET {telecom_url}")
-        print(f"  Params: {params}")
-        print(f"  Status: {resp.status_code}")
-
         if resp.status_code == 200:
-            calls_data = resp.json().get("data", [])
-            print(f"  Found {len(calls_data)} calls from this number")
-
-            # Loop through ALL results to find matching to_number
-            for call in calls_data:
+            for call in resp.json().get("data", []):
                 lead_call = call.get("leadCall") or {}
-                call_to_raw = lead_call.get("to", "")
-                call_to_cleaned = clean_phone(call_to_raw)
-                campaign = lead_call.get("campaign")
-
-                print(f"    - Call ID {call.get('id')}: to={call_to_raw} -> cleaned={call_to_cleaned}, campaign={campaign}")
-
-                # Check if this call's to_number matches our target
-                if call_to_cleaned == clean_to:
-                    print(f"  MATCH FOUND! Call to {call_to_cleaned} matches target {clean_to}")
-
+                if clean_phone(lead_call.get("to", "")) == clean_to:
+                    campaign = lead_call.get("campaign")
                     if campaign:
-                        # Extract campaign info from leadCall.campaign
-                        campaign_id = campaign.get("id")
-                        campaign_name = campaign.get("name", "")
-
-                        # Extract business_unit from outer object, default to 1239
-                        business_unit = call.get("businessUnit")
-                        if business_unit:
-                            business_unit_id = business_unit.get("id", RETELL_BUSINESS_UNIT_ID)
-                            business_unit_name = business_unit.get("name", RETELL_BUSINESS_UNIT_NAME)
-                        else:
-                            business_unit_id = RETELL_BUSINESS_UNIT_ID
-                            business_unit_name = RETELL_BUSINESS_UNIT_NAME
-
-                        print("\n" + "*" * 70)
-                        print("  SUCCESS: Found campaign via Telecom API!")
-                        print(f"  Campaign: {campaign_name} (ID: {campaign_id})")
-                        print(f"  Business Unit: {business_unit_name} (ID: {business_unit_id})")
-                        print("*" * 70 + "\n")
-
+                        business_unit = call.get("businessUnit") or {}
                         return {
                             "method": "telecom_api",
-                            "campaign_id": campaign_id,
-                            "campaign_name": campaign_name,
-                            "business_unit_id": business_unit_id,
-                            "business_unit_name": business_unit_name
+                            "campaign_id": campaign.get("id"),
+                            "campaign_name": campaign.get("name", ""),
+                            "business_unit_id": business_unit.get("id", RETELL_BUSINESS_UNIT_ID),
+                            "business_unit_name": business_unit.get("name", RETELL_BUSINESS_UNIT_NAME)
                         }
-                    else:
-                        print(f"  Matching call found but no campaign attached")
+    except Exception:
+        pass
 
-            print(f"  No call found with to_number matching {clean_to}")
-    except Exception as e:
-        print(f"  Error: {e}")
-
-    # Method 2: Try campaigns API - search by to_number in campaign phone numbers
-    print("\n[Method 2] Trying Campaigns API...")
-    print(f"  Looking for to_number: {clean_to}")
+    # Method 2: Try campaigns API
     campaigns_url = f"https://api.servicetitan.io/marketing/v2/tenant/{TENANT_ID}/campaigns"
-    params = {"pageSize": 100, "active": "true"}
-
     try:
-        resp = requests.get(campaigns_url, headers=headers, params=params)
-        print(f"  GET {campaigns_url}")
-        print(f"  Status: {resp.status_code}")
-
+        resp = requests.get(campaigns_url, headers=headers, params={"pageSize": 100, "active": "true"})
         if resp.status_code == 200:
-            campaigns_data = resp.json().get("data", [])
-            print(f"  Found {len(campaigns_data)} active campaigns")
-            print(f"  Searching for match with: {clean_to}")
-
-            for campaign in campaigns_data:
+            for campaign in resp.json().get("data", []):
                 campaign_phones = campaign.get("campaignPhoneNumbers", [])
-                campaign_name_preview = campaign.get("name", "Unknown")
+                cleaned_phones = []
+                for phone_entry in campaign_phones:
+                    if isinstance(phone_entry, str):
+                        cleaned_phones.append(clean_phone(phone_entry))
+                    elif isinstance(phone_entry, dict):
+                        raw = phone_entry.get("phoneNumber", "") or phone_entry.get("number", "")
+                        cleaned_phones.append(clean_phone(raw))
 
-                if campaign_phones:
-                    # Clean all phone numbers for this campaign
-                    cleaned_phones = []
-                    for phone_entry in campaign_phones:
-                        if isinstance(phone_entry, str):
-                            cleaned = clean_phone(phone_entry)
-                        elif isinstance(phone_entry, dict):
-                            raw = phone_entry.get("phoneNumber", "") or phone_entry.get("number", "") or str(phone_entry)
-                            cleaned = clean_phone(raw)
-                        else:
-                            cleaned = clean_phone(str(phone_entry))
-                        if cleaned:
-                            cleaned_phones.append(cleaned)
+                if clean_to in cleaned_phones:
+                    business_unit = campaign.get("businessUnit")
+                    if isinstance(business_unit, dict):
+                        bu_id = business_unit.get("id", RETELL_BUSINESS_UNIT_ID)
+                        bu_name = business_unit.get("name", RETELL_BUSINESS_UNIT_NAME)
+                    elif isinstance(business_unit, str):
+                        bu_id = RETELL_BUSINESS_UNIT_ID
+                        bu_name = business_unit
+                    else:
+                        bu_id = RETELL_BUSINESS_UNIT_ID
+                        bu_name = RETELL_BUSINESS_UNIT_NAME
 
-                    # Print campaign with its phone numbers (only first 3 campaigns with phones)
-                    if cleaned_phones:
-                        print(f"    - {campaign_name_preview}: {cleaned_phones}")
+                    return {
+                        "method": "campaigns_api",
+                        "campaign_id": campaign.get("id"),
+                        "campaign_name": campaign.get("name", ""),
+                        "business_unit_id": bu_id,
+                        "business_unit_name": bu_name
+                    }
+    except Exception:
+        pass
 
-                    # Check for match
-                    if clean_to in cleaned_phones:
-                        campaign_id = campaign.get("id")
-                        campaign_name = campaign.get("name", "")
-                        business_unit = campaign.get("businessUnit")
-
-                        # Handle businessUnit being a string, dict, or None
-                        if isinstance(business_unit, dict):
-                            business_unit_id = business_unit.get("id", RETELL_BUSINESS_UNIT_ID)
-                            business_unit_name = business_unit.get("name", RETELL_BUSINESS_UNIT_NAME)
-                        elif isinstance(business_unit, str):
-                            # businessUnit is just the name as a string
-                            business_unit_id = RETELL_BUSINESS_UNIT_ID
-                            business_unit_name = business_unit
-                        else:
-                            business_unit_id = RETELL_BUSINESS_UNIT_ID
-                            business_unit_name = RETELL_BUSINESS_UNIT_NAME
-
-                        print("\n" + "*" * 70)
-                        print("  SUCCESS: Found campaign via Campaigns API!")
-                        print(f"  Campaign: {campaign_name} (ID: {campaign_id})")
-                        print(f"  Business Unit: {business_unit_name} (ID: {business_unit_id})")
-                        print(f"  Matched phone: {clean_to}")
-                        print("*" * 70 + "\n")
-
-                        return {
-                            "method": "campaigns_api",
-                            "campaign_id": campaign_id,
-                            "campaign_name": campaign_name,
-                            "business_unit_id": business_unit_id,
-                            "business_unit_name": business_unit_name
-                        }
-
-            print(f"  No campaign found with phone number: {clean_to}")
-    except Exception as e:
-        print(f"  Error: {e}")
-
-    # Method 3: Use real fallback values for Retell number
-    print("\n[Method 3] Using real fallback values for Retell number...")
-    print("*" * 70)
-    print("  FALLBACK: Using confirmed values for +14126596858")
-    print(f"  Campaign: {RETELL_CAMPAIGN_NAME} (ID: {RETELL_CAMPAIGN_ID})")
-    print(f"  Business Unit: {RETELL_BUSINESS_UNIT_NAME} (ID: {RETELL_BUSINESS_UNIT_ID})")
-    print("*" * 70 + "\n")
-
+    # Fallback
     return {
-        "method": "real_fallback",
+        "method": "fallback",
         "campaign_id": RETELL_CAMPAIGN_ID,
         "campaign_name": RETELL_CAMPAIGN_NAME,
         "business_unit_id": RETELL_BUSINESS_UNIT_ID,

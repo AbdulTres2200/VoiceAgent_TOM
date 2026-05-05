@@ -4,6 +4,7 @@ import dateparser
 from app.models import BookingResponse
 from app.services.servicetitan import create_booking
 from app.services.retell import update_call_metadata, store_call_job_mapping
+from app.services.email_notify import send_call_summary
 
 
 def parse_appointment_time(time_string):
@@ -158,39 +159,8 @@ async def book_appointment(request: Request):
             zone_business_unit_id = cached_bu["business_unit_id"]
             zone_business_unit_name = cached_bu["business_unit_name"]
 
-    # Print nicely formatted booking summary to console (wrapped in try-except to never block operation)
-    try:
-        timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        print("\n")
-        print("╔══════════════════════════════════════════════════════════════╗")
-        print("║              NEW BOOKING REQUEST RECEIVED                    ║")
-        print("╠══════════════════════════════════════════════════════════════╣")
-        print(f"║  Customer Name    : {str(customer_name or ''):<40} ║")
-        print(f"║  Address          : {str(address or ''):<40} ║")
-        print(f"║  Phone            : {str(phone or ''):<40} ║")
-        print(f"║  Alternate Phone  : {str(alternate_phone or 'N/A'):<40} ║")
-        print(f"║  Email            : {str(email or 'N/A'):<40} ║")
-        print(f"║  Issue Description: {str(issue_description or ''):<40} ║")
-        print(f"║  Appointment Time : {str(appointment_time or ''):<40} ║")
-        print(f"║  Appointment Start: {str(appointment_start or ''):<40} ║")
-        print(f"║  Appointment End  : {str(appointment_end or ''):<40} ║")
-        print(f"║  Customer Type    : {str(customer_type or ''):<40} ║")
-        print(f"║  Is Homeowner     : {str(is_homeowner or ''):<40} ║")
-        print(f"║  Promo Emails     : {str(promotional_emails or ''):<40} ║")
-        print(f"║  To Number        : {str(to_number or 'Not provided'):<40} ║")
-        print(f"║  Campaign ID      : {str(campaign_id or 'Auto'):<40} ║")
-        bu_display = f"{business_unit_id} (zone: {zone_business_unit_name})" if zone_business_unit_id else str(business_unit_id or 'Auto')
-        print(f"║  Business Unit ID : {bu_display:<40} ║")
-        print(f"║  Retell Call ID   : {str(call_id or 'Not provided'):<40} ║")
-        print(f"║  Is Excavation    : {str(is_excavation):<40} ║")
-        print(f"║  Existing Cust ID : {str(existing_customer_id or 'None'):<40} ║")
-        print(f"║  Existing Loc ID  : {str(existing_location_id or 'None'):<40} ║")
-        print("╠══════════════════════════════════════════════════════════════╣")
-        print(f"║  Received at      : {timestamp:<40} ║")
-        print("╚══════════════════════════════════════════════════════════════╝")
-        print("\n")
-    except Exception as e:
-        print(f"[Booking] Warning: Could not print booking summary: {e}")
+    # Simple booking log
+    print(f"[Booking] {customer_name} | {phone} | {address} | {issue_description[:50] if issue_description else 'N/A'}...")
 
     # Create booking in ServiceTitan
     st_result = create_booking(
@@ -229,6 +199,32 @@ async def book_appointment(request: Request):
             # Also try to update Retell metadata (may fail but that's OK)
             update_call_metadata(call_id, {"job_id": str(job_id)})
 
+        # Get dispatch status
+        dispatch_info = st_result.get("dispatch", {})
+        if dispatch_info.get("auto_dispatch"):
+            dispatch_status = "Auto-dispatched"
+        elif dispatch_info.get("requires_approval"):
+            dispatch_status = "Requires approval"
+        else:
+            dispatch_status = "Pending"
+
+        # Send email notification
+        send_call_summary(
+            call_type="BOOKING",
+            customer_name=customer_name,
+            phone=phone,
+            address=address,
+            email=email,
+            issue=issue_description,
+            appointment_time=appointment_time,
+            job_id=str(job_id),
+            job_type=st_result.get("job_type_name"),
+            dispatch_status=dispatch_status,
+            business_unit=zone_business_unit_name,
+            is_emergency=is_emergency,
+            is_excavation=is_excavation
+        )
+
         confirmation_message = (
             f"Great! I've booked your appointment for {customer_name} "
             f"at {address} for {appointment_time}. "
@@ -237,6 +233,18 @@ async def book_appointment(request: Request):
         )
     else:
         success = False
+        # Send email notification for failed booking
+        send_call_summary(
+            call_type="BOOKING",
+            customer_name=customer_name,
+            phone=phone,
+            address=address,
+            email=email,
+            issue=issue_description,
+            appointment_time=appointment_time,
+            error=st_result.get("error") or st_result.get("message") or "Booking failed"
+        )
+
         confirmation_message = (
             f"I've received your booking request for {customer_name}. "
             f"Our team will contact you shortly at {phone} to confirm. "

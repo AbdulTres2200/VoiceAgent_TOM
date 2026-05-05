@@ -9,6 +9,7 @@ from app.services.retell import get_job_id_for_call
 from app.services.servicetitan_notes import post_job_note
 from app.services.servicetitan import test_connection, lookup_customer_by_phone, explore_account, lookup_by_address, fetch_account_config, get_campaign_from_call, get_campaign_details, get_latest_call, get_call_details, test_telecom, get_live_call_campaign, get_zones, get_job_types, get_job_types_from_st, detect_job_type, store_live_call_info, parse_appointment_time, get_business_unit_by_zone, get_business_units_from_st, store_service_area_business_unit, store_service_area_address, store_service_area_bu_by_address, create_lead, get_access_token, TENANT_ID, APP_KEY, clean_phone, create_excavation_jobs, EXCAVATOR_EMAILS_BY_ID, send_excavation_email
 from app.services.service_area import check_service_area, get_service_area_zips, preload_service_area_cache
+from app.services.email_notify import send_call_summary
 
 load_dotenv()
 
@@ -128,13 +129,8 @@ async def inbound_webhook(request: Request):
 
     data = await request.json()
 
-    # Debug: log payload structure to identify where phone numbers are
-    print(f"[Inbound Webhook] Payload keys: {list(data.keys())}")
-
     # Retell sends data under "call" or "call_inbound" depending on event type
     call_data = data.get("call", {}) or data.get("call_inbound", {})
-    if call_data:
-        print(f"[Inbound Webhook] call data keys: {list(call_data.keys())}")
 
     # Get from_number and to_number from Retell payload - try multiple locations
     from_number = (
@@ -172,37 +168,28 @@ async def inbound_webhook(request: Request):
     # For ServiceTitan lookup, use the 10-digit version
     clean_phone = cleaned_from_number[-10:] if len(cleaned_from_number) >= 10 else cleaned_from_number
 
-    print(f"[Inbound Webhook] Received call from: {from_number} -> cleaned: {cleaned_from_number}")
-    print(f"[Inbound Webhook] To number: {to_number}")
-
     # Bill Guntrum detection - excavation department head
     BILL_GUNTRUM_PHONE = "7242571514"
     is_bill_guntrum = clean_phone == BILL_GUNTRUM_PHONE
-    if is_bill_guntrum:
-        print(f"[Inbound Webhook] *** BILL GUNTRUM DETECTED *** - Excavation follow-up flow")
 
-    # Cache the to_number for this caller (so booking can look up campaign later)
+    # Cache the to_number for this caller
     if from_number and to_number:
         store_live_call_info(from_number, to_number)
 
-    # Look up customer in ServiceTitan (with timeout to avoid blocking voice agent)
-    # IMPORTANT: Skip lookup if phone is empty to avoid returning wrong customer
+    # Look up customer in ServiceTitan (with timeout)
     result = {"found": False}
     if clean_phone and len(clean_phone) >= 10:
-        print("[Inbound] Timeout set to 8s for customer lookup")
         try:
             loop = asyncio.get_event_loop()
             with concurrent.futures.ThreadPoolExecutor() as executor:
                 result = await asyncio.wait_for(
                     loop.run_in_executor(executor, lookup_customer_by_phone, clean_phone),
-                    timeout=8.0  # 8 second timeout - allow more time for ST API
+                    timeout=8.0
                 )
         except asyncio.TimeoutError:
-            print(f"[Inbound Webhook] Customer lookup timed out after 8s, continuing without customer data")
-        except Exception as e:
-            print(f"[Inbound Webhook] Customer lookup error: {e}")
-    else:
-        print(f"[Inbound Webhook] Skipping customer lookup - no valid phone number")
+            pass
+        except Exception:
+            pass
 
     # Look up campaign info from to_number
     campaign_id = ""
@@ -217,7 +204,6 @@ async def inbound_webhook(request: Request):
             campaign_name = campaign_info.get("campaign_name", "") or ""
             business_unit_id = str(campaign_info.get("business_unit_id", "")) if campaign_info.get("business_unit_id") else ""
             business_unit_name = campaign_info.get("business_unit_name", "") or ""
-            print(f"[Inbound] Campaign found: {campaign_name} (ID: {campaign_id}), BU: {business_unit_name} (ID: {business_unit_id})")
 
     # Build dynamic variables
     dynamic_vars = {
@@ -252,16 +238,12 @@ async def inbound_webhook(request: Request):
                     "Authorization": f"Bearer {token}",
                     "ST-App-Key": APP_KEY
                 }
-                # Use /locations endpoint with customerId param (not /customers/{id}/locations)
                 loc_url = f"https://api.servicetitan.io/crm/v2/tenant/{TENANT_ID}/locations"
                 loc_resp = requests.get(loc_url, headers=headers, params={"customerId": customer_id, "pageSize": 1}, timeout=5)
                 if loc_resp.status_code == 200:
                     locations = loc_resp.json().get("data", [])
-                    print(f"[Inbound] Fetched {len(locations)} locations for customer {customer_id}")
-                else:
-                    print(f"[Inbound] Failed to fetch locations: {loc_resp.status_code}")
-            except Exception as e:
-                print(f"[Inbound] Error fetching locations: {e}")
+            except Exception:
+                pass
 
         # Format address
         address_str = f"{address.get('street', '')} {address.get('city', '')}".strip()
@@ -288,7 +270,10 @@ async def inbound_webhook(request: Request):
             "recent_job": ""
         })
 
-    print(f"[Inbound] Dynamic variables being sent to Retell: {dynamic_vars}")
+    # Simple inbound log
+    cust_name = dynamic_vars.get("customer_name", "Unknown")
+    cust_found = dynamic_vars.get("customer_found", "false")
+    print(f"[Inbound] {from_number} | Found: {cust_found} | {cust_name}")
 
     response = {
         "call_inbound": {
@@ -312,17 +297,7 @@ async def lookup_by_address_endpoint(request: Request):
     args = data.get('args', data)
     address = args.get('address') or args.get('street') or ""
 
-    # Print formatted log
-    print("\n")
-    print("╔══════════════════════════════════════════════════════════════╗")
-    print("║              ADDRESS LOOKUP REQUEST                          ║")
-    print("╠══════════════════════════════════════════════════════════════╣")
-    print(f"║  Address: {address:<50} ║")
-    print("╚══════════════════════════════════════════════════════════════╝")
-
     if not address:
-        print("║  Result: No address provided                                 ║")
-        print("╚══════════════════════════════════════════════════════════════╝\n")
         return {"found": False, "message": "No address provided"}
 
     result = lookup_by_address(address)
@@ -332,24 +307,14 @@ async def lookup_by_address_endpoint(request: Request):
         addr = customer.get("address", {})
         recent_jobs = result.get("recent_jobs", [])
 
-        # Format full address
         address_str = f"{addr.get('street', '')} {addr.get('city', '')} {addr.get('state', '')}".strip()
-
-        # Format recent job
         recent_job_str = ""
         if recent_jobs:
             job = recent_jobs[0]
             summary = job.get('summary', 'N/A').replace('\r', '').replace('\n', ' ').strip()
             recent_job_str = f"{summary} - {job.get('status', 'N/A')}"
 
-        print("╔══════════════════════════════════════════════════════════════╗")
-        print("║              ADDRESS LOOKUP RESULT                           ║")
-        print("╠══════════════════════════════════════════════════════════════╣")
-        print(f"║  Found: YES                                                  ║")
-        print(f"║  Customer: {customer.get('name', ''):<49} ║")
-        print(f"║  Address: {address_str:<50} ║")
-        print(f"║  ID: {customer.get('id', ''):<55} ║")
-        print("╚══════════════════════════════════════════════════════════════╝\n")
+        print(f"[AddressLookup] Found: {customer.get('name', '')} at {address_str}")
 
         return {
             "found": True,
@@ -359,13 +324,7 @@ async def lookup_by_address_endpoint(request: Request):
             "recent_job": recent_job_str
         }
     else:
-        print("╔══════════════════════════════════════════════════════════════╗")
-        print("║              ADDRESS LOOKUP RESULT                           ║")
-        print("╠══════════════════════════════════════════════════════════════╣")
-        print(f"║  Found: NO                                                   ║")
-        print(f"║  Address searched: {address:<41} ║")
-        print("╚══════════════════════════════════════════════════════════════╝\n")
-
+        print(f"[AddressLookup] Not found: {address}")
         return {
             "found": False,
             "message": "No customer found with this address"
@@ -1068,29 +1027,26 @@ Recording: {recording_url}
                 note_resp = requests.post(note_url, headers=headers, json={"text": note_text})
 
                 if note_resp.status_code in (200, 201):
-                    print(f"[PostCall] Non-booking call - lead {lead_id} created and recording attached")
+                    print(f"[PostCall] Lead {lead_id} created")
                     action_result = f"Lead {lead_id}"
                 else:
-                    print(f"[PostCall] Lead created but note failed: {note_resp.status_code} - {note_resp.text}")
+                    print(f"[PostCall] Lead {lead_id} created (note failed)")
                     action_result = f"Lead {lead_id} (note failed)"
+
+                # Send email notification for lead
+                send_call_summary(
+                    call_type=call_type,
+                    customer_name="Unknown",
+                    phone=cleaned_from_number,
+                    issue=summary,
+                    lead_id=str(lead_id)
+                )
             else:
-                print("[PostCall] Failed to create lead")
+                print("[PostCall] Lead creation failed")
                 action_result = "Lead creation failed"
 
-    # Print final summary
-    print("\n")
-    print("╔══════════════════════════════════════════════════════════════╗")
-    print("║           POST CALL WEBHOOK SUMMARY                          ║")
-    print("╠══════════════════════════════════════════════════════════════╣")
-    print(f"║  Call ID:      {call_id:<45} ║")
-    print(f"║  From:         {from_number:<45} ║")
-    print(f"║  Duration:     {duration_seconds}s{' ':<43}║")
-    print(f"║  Booking Made: {booking_made:<45} ║")
-    print(f"║  Call Type:    {call_type:<45} ║")
-    print(f"║  Summary:      {summary[:43]:<45} ║")
-    print(f"║  Action:       {action_result:<45} ║")
-    print("╚══════════════════════════════════════════════════════════════╝")
-    print("\n")
+    # Simple summary log
+    print(f"[PostCall] {from_number} | {call_type} | {action_result}")
 
     return {"status": "ok"}
 

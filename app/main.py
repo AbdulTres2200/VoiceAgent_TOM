@@ -385,7 +385,7 @@ async def check_service_area_endpoint(request: Request):
 
         if search_lat and search_lng:
             print(f"[CustomerLookup] Searching by geocode: ({search_lat}, {search_lng})")
-            from app.services.service_area import parse_address_with_google
+            from app.services.service_area import parse_address_google
             import requests as req
 
             access_token = get_access_token()
@@ -408,7 +408,7 @@ async def check_service_area_endpoint(request: Request):
                         loc_addr = loc.get("address", {})
                         loc_addr_str = f"{loc_addr.get('street', '')}, {loc_addr.get('city', '')}, {loc_addr.get('state', '')} {loc_addr.get('zip', '')}"
 
-                        loc_geo = parse_address_with_google(loc_addr_str, GOOGLE_MAPS_API_KEY)
+                        loc_geo = parse_address_google(loc_addr_str, GOOGLE_MAPS_API_KEY)
                         if loc_geo.get("lat") and loc_geo.get("lng"):
                             lat_diff = abs(search_lat - loc_geo["lat"])
                             lng_diff = abs(search_lng - loc_geo["lng"])

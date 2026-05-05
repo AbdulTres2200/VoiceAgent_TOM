@@ -3090,11 +3090,11 @@ def lookup_by_address(address: str):
     # If no results, try geocoding with Google and matching by lat/lng
     if not locations and zip_code:
         print(f"[ServiceTitan] Trying Google geocode match for: {address}")
-        from app.services.service_area import parse_address_with_google
+        from app.services.service_area import parse_address_google
         import os
 
         google_api_key = os.getenv("GOOGLE_MAPS_API_KEY")
-        search_geo = parse_address_with_google(address, google_api_key)
+        search_geo = parse_address_google(address, google_api_key)
 
         if search_geo.get("lat") and search_geo.get("lng"):
             search_lat = search_geo["lat"]
@@ -3111,7 +3111,7 @@ def lookup_by_address(address: str):
                     # Build full address string for geocoding
                     loc_addr_str = f"{loc_addr.get('street', '')}, {loc_addr.get('city', '')}, {loc_addr.get('state', '')} {loc_addr.get('zip', '')}"
 
-                    loc_geo = parse_address_with_google(loc_addr_str, google_api_key)
+                    loc_geo = parse_address_google(loc_addr_str, google_api_key)
                     if loc_geo.get("lat") and loc_geo.get("lng"):
                         # Calculate distance (simple approximation)
                         lat_diff = abs(search_lat - loc_geo["lat"])

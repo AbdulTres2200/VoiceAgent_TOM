@@ -438,12 +438,27 @@ async def check_service_area_endpoint(request: Request):
                                     customer_name = customer.get("name", "")
                                     formatted_addr = f"{loc_addr.get('street', '')}, {loc_addr.get('city', '')}, {loc_addr.get('state', '')} {loc_addr.get('zip', '')}"
 
+                                    # Get customer contacts (phone and email)
+                                    contacts_url = f"https://api.servicetitan.io/crm/v2/tenant/{TENANT_ID}/customers/{customer_id}/contacts"
+                                    contacts_resp = req.get(contacts_url, headers=headers)
+                                    customer_phone = ""
+                                    customer_email = ""
+                                    if contacts_resp.status_code == 200:
+                                        contacts = contacts_resp.json().get("data", [])
+                                        for contact in contacts:
+                                            if contact.get("type") == "Phone" and not customer_phone:
+                                                customer_phone = contact.get("value", "")
+                                            elif contact.get("type") == "Email" and not customer_email:
+                                                customer_email = contact.get("value", "")
+
                                     result["found"] = True
                                     result["customer_id"] = customer_id
                                     result["location_id"] = location_id
                                     result["customer_name"] = customer_name
+                                    result["customer_phone"] = customer_phone
+                                    result["customer_email"] = customer_email
                                     result["formatted_address"] = formatted_addr.upper()
-                                    print(f"[CustomerLookup] Match: {customer_name} at {loc_street}")
+                                    print(f"[CustomerLookup] Match: {customer_name} | {customer_phone} | {customer_email}")
                                     break
 
                     if not result.get("found"):

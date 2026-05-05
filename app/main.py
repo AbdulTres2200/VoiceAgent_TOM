@@ -252,8 +252,9 @@ async def inbound_webhook(request: Request):
                     "Authorization": f"Bearer {token}",
                     "ST-App-Key": APP_KEY
                 }
-                loc_url = f"https://api.servicetitan.io/crm/v2/tenant/{TENANT_ID}/customers/{customer_id}/locations"
-                loc_resp = requests.get(loc_url, headers=headers, timeout=5)
+                # Use /locations endpoint with customerId param (not /customers/{id}/locations)
+                loc_url = f"https://api.servicetitan.io/crm/v2/tenant/{TENANT_ID}/locations"
+                loc_resp = requests.get(loc_url, headers=headers, params={"customerId": customer_id, "pageSize": 1}, timeout=5)
                 if loc_resp.status_code == 200:
                     locations = loc_resp.json().get("data", [])
                     print(f"[Inbound] Fetched {len(locations)} locations for customer {customer_id}")

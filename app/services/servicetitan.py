@@ -1029,11 +1029,19 @@ Other classifications:
 - Water heater leaking -> WH2
 - Water heater estimate -> WH3
 - Gas smell/gas leak/gas line issues -> GAS1
+- Gas line to grill/pool/appliances -> GAS2 or GAS3
 - Sump pump or sewage pump -> Pump1
 - Well pump -> Pump2
 - Faucet, toilet, minor leak, frozen pipes -> P2 Minor Plumbing
+- Backflow test, backflow preventer, cross-connection test -> P2 Minor Plumbing
+- Plumbing inspection, compliance inspection -> P2 Minor Plumbing
+- General plumbing service call -> P2 Minor Plumbing
 - Emergency water line break/burst -> P1 Emergency Plumbing
-- Remodel estimate -> P3"""
+- Remodel estimate -> P3
+- Dye test, sewer line estimate/inspection -> S3
+- Septic issues -> S4
+
+WHEN UNSURE: Default to P2 Minor Plumbing for general service calls."""
                 },
                 {
                     "role": "user",

@@ -175,6 +175,12 @@ async def inbound_webhook(request: Request):
     print(f"[Inbound Webhook] Received call from: {from_number} -> cleaned: {cleaned_from_number}")
     print(f"[Inbound Webhook] To number: {to_number}")
 
+    # Bill Guntrum detection - excavation department head
+    BILL_GUNTRUM_PHONE = "7242571514"
+    is_bill_guntrum = clean_phone == BILL_GUNTRUM_PHONE
+    if is_bill_guntrum:
+        print(f"[Inbound Webhook] *** BILL GUNTRUM DETECTED *** - Excavation follow-up flow")
+
     # Cache the to_number for this caller (so booking can look up campaign later)
     if from_number and to_number:
         store_live_call_info(from_number, to_number)
@@ -216,7 +222,8 @@ async def inbound_webhook(request: Request):
     # Build dynamic variables
     dynamic_vars = {
         "to_number": to_number,
-        "caller_number": cleaned_from_number
+        "caller_number": cleaned_from_number,
+        "is_bill_guntrum": "true" if is_bill_guntrum else "false"
     }
 
     # Add campaign/business unit info (only if we have values)
@@ -233,6 +240,27 @@ async def inbound_webhook(request: Request):
         customer = result.get("customer", {})
         address = customer.get("address", {})
         recent_jobs = result.get("recent_jobs", [])
+        customer_id = customer.get("id")
+
+        # Fetch customer locations from ServiceTitan
+        locations = []
+        if customer_id:
+            try:
+                import requests
+                token = get_access_token()
+                headers = {
+                    "Authorization": f"Bearer {token}",
+                    "ST-App-Key": APP_KEY
+                }
+                loc_url = f"https://api.servicetitan.io/crm/v2/tenant/{TENANT_ID}/customers/{customer_id}/locations"
+                loc_resp = requests.get(loc_url, headers=headers, timeout=5)
+                if loc_resp.status_code == 200:
+                    locations = loc_resp.json().get("data", [])
+                    print(f"[Inbound] Fetched {len(locations)} locations for customer {customer_id}")
+                else:
+                    print(f"[Inbound] Failed to fetch locations: {loc_resp.status_code}")
+            except Exception as e:
+                print(f"[Inbound] Error fetching locations: {e}")
 
         # Format address
         address_str = f"{address.get('street', '')} {address.get('city', '')}".strip()
@@ -247,7 +275,7 @@ async def inbound_webhook(request: Request):
             "customer_name": customer.get("name", ""),
             "customer_address": address_str,
             "customer_found": "true",
-            "customer_id": str(customer.get("id", "")),
+            "customer_id": str(customer_id) if customer_id else "",
             "location_id": str(locations[0].get("id", "")) if locations else "",
             "recent_job": recent_job_str
         })

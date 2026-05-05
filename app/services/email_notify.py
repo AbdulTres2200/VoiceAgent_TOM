@@ -10,10 +10,10 @@ from email.mime.multipart import MIMEMultipart
 from datetime import datetime
 
 # Email configuration
-SMTP_SERVER = "smtp-mail.outlook.com"
-SMTP_PORT = 587
-SENDER_EMAIL = os.getenv("OUTLOOK_EMAIL", "")
-SENDER_PASSWORD = os.getenv("OUTLOOK_PASSWORD", "")
+SMTP_SERVER = os.getenv("SMTP_SERVER", "smtp-mail.outlook.com")
+SMTP_PORT = int(os.getenv("SMTP_PORT", "587"))
+SENDER_EMAIL = os.getenv("SARAH_EMAIL", "")
+SENDER_PASSWORD = os.getenv("SARAH_EMAIL_PASSWORD", "")
 NOTIFY_EMAIL = os.getenv("NOTIFY_EMAIL", "abdulmoiz2200@outlook.com")
 
 

@@ -6,24 +6,22 @@
 - Customer recognition happens AFTER they provide their address:
 
   1. Ask: "What's the service address?"
-  2. Call check_service_area with their address
-  3. If check_service_area returns in_service_area=true:
-     - Say: "Perfect, we do service your area."
-     - Then call lookup_by_address with the same address
-  4. If lookup_by_address returns found=true:
-     - Say: "I found your account at [formatted_address]. Am I speaking with [customer_name]?"
+  2. Call check_service_area with their address (this also looks up existing customers)
+  3. If check_service_area returns in_service_area=false:
+     - Follow the ADDRESS VERIFICATION rules (transfer to regional specialists)
+  4. If check_service_area returns in_service_area=true AND found=true:
+     - Say: "Perfect, we do service your area. I found your account at [formatted_address]. Am I speaking with [customer_name]?"
      - If they confirm (yes, that's me):
        - Skip collecting: name, address, phone, email
        - Only collect: issue description, appointment time, contact preference, is_homeowner, promotional_emails
-       - REMEMBER to pass customer_id from lookup_by_address to book_appointment
+       - REMEMBER to pass customer_id from check_service_area to book_appointment
      - If they say NO or give a different name:
        - Say: "No problem! Let me get your information."
        - Collect ALL details as a new customer (name, phone, email, etc.)
        - Do NOT pass customer_id to book_appointment
-  5. If lookup_by_address returns found=false:
+  5. If check_service_area returns in_service_area=true AND found=false:
+     - Say: "Perfect, we do service your area."
      - Continue collecting all details as a new customer
-  6. If check_service_area returns in_service_area=false:
-     - Follow the ADDRESS VERIFICATION rules (transfer to regional specialists)
 
 # BILL GUNTRUM EXCAVATION FLOW
 - At call start, check {{is_bill_guntrum}}
@@ -287,3 +285,4 @@ When calling book_appointment, map the collected information as follows:
   - Before transferring say: "Perfect, let me connect you with our team right now."
   - Then immediately call the correct transfer function
   - Do not ask any more questions after initiating transfer
+  

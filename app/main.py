@@ -328,9 +328,9 @@ async def test_job_type(issue: str):
 @app.post("/check-service-area")
 async def check_service_area_endpoint(request: Request):
     """
-    Check if an address is within the service area.
-    Returns service area status, parsed address, zone info, and business unit.
-    Caches business unit by phone for automatic use during booking.
+    Check if an address is within the service area AND lookup existing customer.
+    Returns service area status, parsed address, zone info, business unit, AND customer info.
+    This combines check_service_area + lookup_by_address into one fast call.
     """
     data = await request.json()
     args = data.get('args', data)
@@ -377,6 +377,67 @@ async def check_service_area_endpoint(request: Request):
             state=result.get("state", ""),
             zip_code=result.get("zip_code", "")
         )
+
+    # If in service area, also lookup existing customer using Google geocoding
+    if result.get("in_service_area"):
+        search_lat = result.get("lat")
+        search_lng = result.get("lng")
+
+        if search_lat and search_lng:
+            print(f"[CustomerLookup] Searching by geocode: ({search_lat}, {search_lng})")
+            from app.services.service_area import parse_address_with_google
+            import requests as req
+
+            access_token = get_access_token()
+            headers = {
+                "Authorization": f"Bearer {access_token}",
+                "ST-App-Key": APP_KEY
+            }
+
+            # Search locations in this zip code
+            zip_code = result.get("zip_code", "")
+            if zip_code:
+                url = f"https://api.servicetitan.io/crm/v2/tenant/{TENANT_ID}/locations"
+                resp = req.get(url, headers=headers, params={"zip": zip_code, "pageSize": 50})
+
+                if resp.status_code == 200:
+                    all_locations = resp.json().get("data", [])
+                    print(f"[CustomerLookup] Found {len(all_locations)} locations in zip {zip_code}")
+
+                    for loc in all_locations:
+                        loc_addr = loc.get("address", {})
+                        loc_addr_str = f"{loc_addr.get('street', '')}, {loc_addr.get('city', '')}, {loc_addr.get('state', '')} {loc_addr.get('zip', '')}"
+
+                        loc_geo = parse_address_with_google(loc_addr_str, GOOGLE_MAPS_API_KEY)
+                        if loc_geo.get("lat") and loc_geo.get("lng"):
+                            lat_diff = abs(search_lat - loc_geo["lat"])
+                            lng_diff = abs(search_lng - loc_geo["lng"])
+                            # ~0.001 degree = ~111 meters
+                            if lat_diff < 0.001 and lng_diff < 0.001:
+                                # Found matching location - get customer details
+                                customer_id = loc.get("customerId")
+                                location_id = loc.get("id")
+
+                                # Fetch customer name
+                                cust_url = f"https://api.servicetitan.io/crm/v2/tenant/{TENANT_ID}/customers/{customer_id}"
+                                cust_resp = req.get(cust_url, headers=headers)
+
+                                if cust_resp.status_code == 200:
+                                    customer = cust_resp.json()
+                                    customer_name = customer.get("name", "")
+                                    formatted_addr = f"{loc_addr.get('street', '')}, {loc_addr.get('city', '')}, {loc_addr.get('state', '')} {loc_addr.get('zip', '')}"
+
+                                    result["found"] = True
+                                    result["customer_id"] = customer_id
+                                    result["location_id"] = location_id
+                                    result["customer_name"] = customer_name
+                                    result["formatted_address"] = formatted_addr.upper()
+                                    print(f"[CustomerLookup] Found: {customer_name} at {loc_addr.get('street')}")
+                                break
+
+                    if not result.get("found"):
+                        result["found"] = False
+                        print(f"[CustomerLookup] No matching customer found")
 
     return result
 

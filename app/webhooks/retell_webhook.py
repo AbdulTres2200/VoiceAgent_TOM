@@ -339,8 +339,11 @@ async def retell_webhook(request: Request):
                             "role": "system",
                             "content": """Analyze this plumbing company call transcript and respond in EXACTLY this format:
 BOOKING_MADE:yes or no
-CALL_TYPE:BOOKING or INQUIRY or VENDOR or INVOICING or FOLLOWUP or OTHER
-SUMMARY:Brief 2-3 sentence summary of the call"""
+CALL_TYPE:BOOKING or INQUIRY or VENDOR or INVOICING or FOLLOWUP or SPAM or SILENT or OTHER
+SUMMARY:Brief 2-3 sentence summary of the call
+
+Use SPAM for: sales calls, solicitation, marketing pitches, business listing verification, SEO services, Google verification scams, robocalls, or any unsolicited promotional calls.
+Use SILENT for: calls where the caller said nothing, immediate hangups, or no meaningful conversation occurred."""
                         },
                         {
                             "role": "user",
@@ -448,8 +451,12 @@ Recording: {recording_url}
                 booking_made = "no"
 
         if booking_made != "yes":
+            # Skip lead creation for spam and silent calls
+            if call_type in ("SPAM", "SILENT"):
+                action_result = f"Skipped ({call_type})"
+                print(f"║  Action: Skipped lead - {call_type:<36} ║")
             # Check if lead was already created by another webhook
-            if is_lead_already_created(call_id):
+            elif is_lead_already_created(call_id):
                 action_result = "Lead already created (dedup)"
                 print(f"║  Action: Lead already created, skipping (dedup)              ║")
             else:

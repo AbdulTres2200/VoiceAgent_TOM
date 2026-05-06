@@ -93,11 +93,9 @@
   - Continue with normal booking flow (collect all info, book the job)
   - After book_appointment returns successfully, IMMEDIATELY:
     - Say: "Given the urgency of your situation I'm also going to connect you with someone who can personally assist you further. Please hold."
-    - Check current time in EST:
-      - If between 8:00 AM and 6:00 PM EST Monday through Friday:
-        - Call transfer_callcentre
-      - If outside business hours (evenings, weekends, holidays):
-        - Call transfer_owner (Bob)
+    - Call check_business_hours to determine transfer destination
+    - If transfer_to is "callcentre": Call transfer_callcentre
+    - If transfer_to is "owner": Call transfer_owner (Bob)
   - SKIP the regular CLOSING script entirely
   - DO NOT ask "is there anything else I can help you with"
   - The transfer happens IMMEDIATELY after booking confirmation

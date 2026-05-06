@@ -57,6 +57,42 @@ async def health_check():
     return {"status": "healthy"}
 
 
+@app.post("/check-business-hours")
+async def check_business_hours():
+    """
+    Check if current time is within business hours (Mon-Fri 8AM-6PM EST).
+    Used by Sarah to decide emergency transfer destination.
+    """
+    from datetime import datetime
+    from zoneinfo import ZoneInfo
+
+    # Get current time in EST
+    est = ZoneInfo("America/New_York")
+    now = datetime.now(est)
+
+    current_hour = now.hour
+    current_day = now.weekday()  # 0=Monday, 6=Sunday
+
+    # Business hours: Mon-Fri (0-4), 8AM-6PM (8-18)
+    is_weekday = current_day < 5
+    is_business_time = 8 <= current_hour < 18
+    is_business_hours = is_weekday and is_business_time
+
+    # Determine transfer destination
+    transfer_to = "callcentre" if is_business_hours else "owner"
+
+    result = {
+        "is_business_hours": is_business_hours,
+        "current_time": now.strftime("%I:%M %p EST"),
+        "current_day": now.strftime("%A"),
+        "transfer_to": transfer_to,
+        "message": f"Transfer to {transfer_to}" + (" (Bob)" if transfer_to == "owner" else "")
+    }
+
+    print(f"[BusinessHours] {now.strftime('%A %I:%M %p EST')} -> {transfer_to}")
+    return result
+
+
 @app.get("/test-st-connection")
 async def test_servicetitan_connection():
     """

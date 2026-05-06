@@ -1,0 +1,75 @@
+{
+  "type": "object",
+  "properties": {
+    "customer_type": {
+      "type": "string",
+      "description": "Whether the property is residential or commercial"
+    },
+    "contact_preference": {
+      "type": "string",
+      "description": "Whether the customer prefers a call or text when the technician is on the way"
+    },
+    "to_number": {
+      "type": "string",
+      "description": "The phone number that was called (tracking number)"
+    },
+    "is_homeowner": {
+      "type": "string",
+      "description": "Whether the customer owns the home. Yes or No."
+    },
+    "issue_description": {
+      "type": "string",
+      "description": "Description of the plumbing issue the customer is experiencing"
+    },
+    "appointment_time": {
+      "type": "string",
+      "description": "Preferred date and time for the service appointment"
+    },
+    "address": {
+      "type": "string",
+      "description": "Service address where the plumber needs to come"
+    },
+    "promotional_emails": {
+      "type": "string",
+      "description": "Whether the customer gives permission for promotional emails. Yes or No."
+    },
+    "is_emergency": {
+      "type": "boolean",
+      "description": "True if the customer said it is an emergency, false otherwise"
+    },
+    "is_excavation": {
+      "type": "boolean",
+      "description": "Set to true if Sarah identified the issue as requiring excavation work during the call. Set to false for all standard plumbing jobs. Pass as boolean, not string."
+    },
+    "phone": {
+      "type": "string",
+      "description": "Primary phone number of the customer"
+    },
+    "alternate_phone": {
+      "type": "string",
+      "description": "Alternate phone number if provided"
+    },
+    "customer_name": {
+      "type": "string",
+      "description": "Full name of the customer"
+    },
+    "email": {
+      "type": "string",
+      "description": "Email address of the customer"
+    },
+    "customer_id": {
+      "type": "string",
+      "description": "Customer ID from check_service_area. Only pass if found=true AND caller confirmed they are that customer."
+    }
+  },
+  "required": [
+    "customer_name",
+    "address",
+    "phone",
+    "issue_description",
+    "appointment_time",
+    "is_homeowner",
+    "promotional_emails",
+    "is_emergency"
+  ]
+}

@@ -1,0 +1,9 @@
+{
+  "name": "check_business_hours",
+  "description": "Check if current time is within business hours (Mon-Fri 8AM-6PM EST). Call this AFTER booking an emergency to determine where to transfer the caller. Returns transfer_to: 'callcentre' for business hours, or 'owner' for after hours.",
+  "parameters": {
+    "type": "object",
+    "properties": {},
+    "required": []
+  }
+}

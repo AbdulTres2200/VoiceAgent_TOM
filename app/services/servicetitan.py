@@ -2177,8 +2177,28 @@ def create_booking(customer_name, address, phone, email, issue_description,
         "Content-Type": "application/json"
     }
 
+    # Final safeguard: if street is still empty after parsing, extract from original address
+    street_value = parsed_addr.get("street", "")
+    if not street_value:
+        print(f"[ST] WARNING: Parsed street is empty, extracting from original address")
+        # Try to extract street from original address (everything before city/state/zip)
+        import re
+        street_part = address
+        for remove in [parsed_addr.get("city", ""), parsed_addr.get("state", ""), parsed_addr.get("zip", "")]:
+            if remove:
+                street_part = re.sub(re.escape(remove), '', street_part, flags=re.IGNORECASE)
+        street_part = re.sub(r'[,\s]+$', '', street_part).strip()
+        street_part = re.sub(r'^[,\s]+', '', street_part).strip()
+        if street_part:
+            street_value = street_part
+            print(f"[ST] Extracted street from original: {street_value}")
+        else:
+            # Last resort: use the full address as street
+            street_value = address.split(',')[0].strip() if ',' in address else address
+            print(f"[ST] Using first part of address as street: {street_value}")
+
     address_obj = {
-        "street": parsed_addr["street"],
+        "street": street_value,
         "city": parsed_addr["city"],
         "state": parsed_addr["state"],
         "zip": parsed_addr["zip"],

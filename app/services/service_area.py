@@ -194,6 +194,34 @@ def parse_address_google(address_string: str, google_api_key: str = None):
                 result["street"] = f"{street_number} {route}".strip()
                 result["method"] = "google"
 
+                # Fallback: if Google didn't return a proper street (common for rural addresses)
+                # Try to extract street from formatted_address or original input
+                if not result["street"] or result["street"] == street_number:
+                    import re
+                    # Try to get street from formatted_address (everything before the city)
+                    formatted = result.get("formatted_address", "")
+                    if formatted and result["city"]:
+                        # Extract part before city
+                        city_idx = formatted.lower().find(result["city"].lower())
+                        if city_idx > 0:
+                            street_from_formatted = formatted[:city_idx].strip().rstrip(',').strip()
+                            if street_from_formatted:
+                                result["street"] = street_from_formatted
+                                print(f"  Street extracted from formatted_address: {result['street']}")
+
+                    # If still no good street, extract from original input
+                    if not result["street"] or result["street"] == street_number:
+                        # Remove city, state, zip from original and use what's left as street
+                        street_part = address_string
+                        for remove in [result["city"], result["state"], result["zip"]]:
+                            if remove:
+                                street_part = re.sub(re.escape(remove), '', street_part, flags=re.IGNORECASE)
+                        street_part = re.sub(r'[,\s]+$', '', street_part).strip()
+                        street_part = re.sub(r'^[,\s]+', '', street_part).strip()
+                        if street_part:
+                            result["street"] = street_part
+                            print(f"  Street extracted from original input: {result['street']}")
+
                 # Fallback: if Google didn't return zip, try to extract from original input
                 if not result["zip"]:
                     import re

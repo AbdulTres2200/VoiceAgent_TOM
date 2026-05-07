@@ -325,7 +325,15 @@ async def retell_webhook(request: Request):
         call_type = "OTHER"
         summary = call_summary or "Call transcript analysis unavailable"
 
-        if transcript:
+        # Check if transcript is empty or too short (no meaningful conversation)
+        # A transcript with only agent greeting (no customer response) is typically < 100 chars
+        transcript_text = (transcript or "").strip()
+        if not transcript_text or len(transcript_text) < 50:
+            # No transcript or very short = caller didn't speak
+            call_type = "SILENT"
+            summary = "No transcript available - caller did not speak or hung up immediately"
+            print(f"║  No/short transcript - marking as SILENT                      ║")
+        elif transcript_text:
             try:
                 from openai import OpenAI
                 client = OpenAI(api_key=OPENAI_API_KEY)

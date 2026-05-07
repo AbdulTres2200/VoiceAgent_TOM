@@ -895,8 +895,16 @@ async def post_call_webhook(request: Request):
         print(f"[PostCall] Found mapping for call -> job {mapped_job_id}")
         booking_made = "yes"  # Override - we know booking was made
 
+    # Check if transcript is empty or too short (no meaningful conversation)
+    transcript_text = (transcript or "").strip()
+    if not transcript_text or len(transcript_text) < 50:
+        # No transcript or very short = caller didn't speak
+        call_type = "SILENT"
+        summary = "No transcript available - caller did not speak or hung up immediately"
+        print(f"[PostCall] No/short transcript - marking as SILENT")
+
     # Analyze transcript with OpenAI
-    if transcript:
+    elif transcript_text:
         try:
             print("[PostCall] Analyzing transcript with AI...")
             client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))

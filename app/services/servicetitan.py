@@ -2698,15 +2698,25 @@ def create_lead(call_type: str, summary: str, from_number: str, campaign_id: int
                 print("[Lead] No existing customer found, creating new customer...")
 
                 # Create new customer with "Unknown Caller" name
+                # ServiceTitan requires an address - use placeholder for leads
+                placeholder_address = {
+                    "street": "Address Unknown",
+                    "city": "Pittsburgh",
+                    "state": "PA",
+                    "zip": "15222",
+                    "country": "US"
+                }
                 customer_payload = {
                     "name": "Unknown Caller",
                     "type": "Residential",
+                    "address": placeholder_address,
                     "contacts": [
                         {"type": "Phone", "value": cleaned_phone, "memo": "Unknown Caller"}
                     ],
                     "locations": [
                         {
                             "name": "Unknown Caller",
+                            "address": placeholder_address,
                             "contacts": [
                                 {"type": "Phone", "value": cleaned_phone, "memo": "Unknown Caller"}
                             ]
@@ -2798,10 +2808,17 @@ FOLLOWUP_DAYS options: 0 (today), 1 (tomorrow), 2, 3, 5, 7"""
         print(f"[Lead] AI Follow-up: {follow_up_days} days from now ({follow_up_date}) (default)")
 
     # Step 3: Create lead payload
+    # Include phone number in summary so it's always visible, even if customer creation failed
+    phone_display = from_number or cleaned_phone or "No phone"
+    lead_summary = f"[{call_type.upper()}] {summary}"
+    if not customer_id:
+        # No customer was created/found - add phone to summary for visibility
+        lead_summary = f"[{call_type.upper()}] [Phone: {phone_display}] {summary}"
+
     lead_payload = {
         "customerId": customer_id,
         "locationId": location_id,
-        "summary": f"[{call_type.upper()}] {summary}",
+        "summary": lead_summary,
         "callReasonId": 92029507,
         "campaignId": campaign_id,
         "businessUnitId": business_unit_id,

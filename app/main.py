@@ -1025,8 +1025,8 @@ Recording: {recording_url}
                 booking_made = "no"  # Fall through to lead creation
 
     if booking_made != "yes":
-        # Skip lead creation for spam and silent calls
-        if call_type in ("SPAM", "SILENT"):
+        # Skip lead creation for spam calls only
+        if call_type == "SPAM":
             print(f"[PostCall] Skipping lead creation - {call_type} call")
             action_result = f"Skipped ({call_type})"
         # Check if lead was already created by another webhook
@@ -1034,12 +1034,17 @@ Recording: {recording_url}
             print(f"[PostCall] Lead already created for this call (dedup), skipping")
             action_result = "Lead already created (dedup)"
         else:
+            # For SILENT calls, add tag to summary for easy filtering
+            lead_summary = summary
+            if call_type == "SILENT":
+                lead_summary = "[NO RESPONSE] Caller did not speak or hung up immediately"
+
             # Create lead for non-booking call
             print(f"[PostCall] Non-booking call - creating lead...")
 
             lead_id = create_lead(
                 call_type=call_type,
-                summary=summary,
+                summary=lead_summary,
                 from_number=cleaned_from_number,
                 campaign_id=int(campaign_id),
                 business_unit_id=int(business_unit_id)

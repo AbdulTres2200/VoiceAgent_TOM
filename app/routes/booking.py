@@ -2,7 +2,7 @@ from fastapi import APIRouter, Request
 from datetime import datetime, timedelta
 import dateparser
 from app.models import BookingResponse
-from app.services.servicetitan import create_booking
+from app.services.servicetitan import create_booking, get_recent_callers
 from app.services.retell import update_call_metadata, store_call_job_mapping, store_phone_job_mapping
 from app.services.email_notify import send_call_summary
 
@@ -242,6 +242,14 @@ async def book_appointment(request: Request):
         if phone and job_id:
             store_phone_job_mapping(phone, str(job_id))
             print(f"[Booking] Stored customer phone mapping: {phone} -> job {job_id}")
+
+        # Store mappings for ALL recent callers (within 15 min) since Retell doesn't pass from_number
+        # This ensures the actual caller's phone is mapped even if it differs from customer phone
+        recent_callers = get_recent_callers(max_age_minutes=15)
+        for caller_phone in recent_callers:
+            if caller_phone != phone:  # Don't duplicate customer phone
+                store_phone_job_mapping(caller_phone, str(job_id))
+                print(f"[Booking] Stored recent caller mapping: {caller_phone} -> job {job_id}")
 
         # Get dispatch status
         dispatch_info = st_result.get("dispatch", {})

@@ -633,6 +633,18 @@ def get_live_call_to_number(from_number: str):
     return None
 
 
+def get_recent_callers(max_age_minutes: int = 15) -> list:
+    """Get all caller phones from live call cache within max_age_minutes."""
+    now = time.time()
+    max_age_seconds = max_age_minutes * 60
+    recent = []
+    for phone, data in list(_live_call_cache.items()):
+        age = now - data["timestamp"]
+        if age < max_age_seconds:
+            recent.append(phone)
+    return recent
+
+
 def store_service_area_business_unit(phone: str, business_unit_id: int, business_unit_name: str, zone_name: str = None):
     """Store business unit info from service area check for use during booking."""
     cleaned = clean_phone(phone)
@@ -3308,7 +3320,7 @@ FOLLOWUP_DAYS options: 0 (today), 1 (tomorrow), 2, 3, 5, 7"""
         "customerId": customer_id,
         "locationId": location_id,
         "summary": lead_summary,
-        "callReasonId": 92029507,
+        # Note: callReasonId removed - not all accounts have this configured
         "campaignId": campaign_id,
         "businessUnitId": business_unit_id,
         "status": "Open",

@@ -1,0 +1,10 @@
+{
+  "type": "object",
+  "properties": {
+    "referral_response": {
+      "type": "string",
+      "description": "The customer's answer to 'How did you hear about us?' Examples: 'Google', 'a friend recommended you', 'saw your yard sign', 'Facebook ad', 'used you before'"
+    }
+  },
+  "required": ["referral_response"]
+}

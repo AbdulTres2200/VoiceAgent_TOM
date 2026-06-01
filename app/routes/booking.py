@@ -3,7 +3,7 @@ from datetime import datetime, timedelta
 import dateparser
 from app.models import BookingResponse
 from app.services.servicetitan import create_booking
-from app.services.retell import update_call_metadata, store_call_job_mapping
+from app.services.retell import update_call_metadata, store_call_job_mapping, store_phone_job_mapping
 from app.services.email_notify import send_call_summary
 
 
@@ -75,6 +75,13 @@ async def book_appointment(request: Request):
     """
     data = await request.json()
 
+    # DEBUG: Log what Retell sends us
+    print(f"[Booking DEBUG] Top-level keys: {list(data.keys())}")
+    if 'call' in data:
+        print(f"[Booking DEBUG] call keys: {list(data.get('call', {}).keys())}")
+        print(f"[Booking DEBUG] call.from_number: {data.get('call', {}).get('from_number')}")
+        print(f"[Booking DEBUG] call.call_id: {data.get('call', {}).get('call_id')}")
+
     # Extract call_id from Retell request (needed to update metadata after booking)
     call_id = data.get('call_id') or data.get('call', {}).get('call_id')
 
@@ -87,7 +94,7 @@ async def book_appointment(request: Request):
     phone = args.get('phone') or "Not provided"
     alternate_phone = args.get('alternate_phone')
     email = args.get('email')
-    issue_description = args.get('issue_description') or "Not provided"
+    issue_description = args.get('issue_description') or args.get('issue') or "Not provided"
     appointment_time = args.get('appointment_time') or ""
     appointment_start = args.get('appointment_start') or ""
     appointment_end = args.get('appointment_end') or ""
@@ -106,6 +113,9 @@ async def book_appointment(request: Request):
     is_emergency = args.get('is_emergency', False)
     # is_excavation - if true, skip job type detection and use excavation workflow
     is_excavation = args.get('is_excavation', False)
+
+    # Referral source - how customer heard about us (for AI campaign detection)
+    referral_source = args.get('referral_source') or args.get('referral') or args.get('how_heard') or ""
 
     # Existing customer ID from inbound lookup (skip customer creation if provided)
     existing_customer_id = args.get('customer_id') or args.get('existing_customer_id')
@@ -128,6 +138,20 @@ async def book_appointment(request: Request):
     # Get to_number from Retell (passed as dynamic variable from inbound webhook)
     to_number = args.get('to_number') or data.get('to_number')
 
+    # Get from_number (caller's phone) for phone-based job mapping
+    # This is different from customer's phone - it's the number the call came from
+    # Check multiple locations where Retell might pass this
+    dynamic_vars = data.get('retell_llm_dynamic_variables', {}) or data.get('dynamic_variables', {})
+    from_number = (
+        args.get('from_number') or
+        args.get('caller_number') or
+        data.get('from_number') or
+        data.get('caller_number') or
+        dynamic_vars.get('caller_number') or
+        dynamic_vars.get('from_number') or
+        data.get('call', {}).get('from_number')
+    )
+
     # Get zone-based business_unit_id if provided (from check_service_area result)
     zone_business_unit_id = args.get('business_unit_id')
     zone_business_unit_name = args.get('business_unit_name')
@@ -136,7 +160,16 @@ async def book_appointment(request: Request):
     campaign_id = None
     business_unit_id = None
 
-    if to_number:
+    # PRIORITY 1: Use AI to detect campaign from referral source (if provided)
+    if referral_source:
+        from app.services.servicetitan import detect_campaign_from_referral
+        print(f"[Booking] Detecting campaign from referral: '{referral_source}'")
+        campaign_result = detect_campaign_from_referral(referral_source)
+        campaign_id = campaign_result.get("campaign_id")
+        print(f"[Booking] AI detected campaign: {campaign_result.get('campaign_name')} (ID: {campaign_id}) - {campaign_result.get('confidence')}")
+
+    # PRIORITY 2: Fallback to to_number lookup if no referral source
+    if not campaign_id and to_number:
         from app.services.servicetitan import get_live_call_campaign
         print(f"[Booking] Looking up campaign using to_number: {to_number}")
         campaign_info = get_live_call_campaign(phone, to_number)
@@ -161,6 +194,7 @@ async def book_appointment(request: Request):
 
     # Simple booking log
     print(f"[Booking] {customer_name} | {phone} | {address} | {issue_description[:50] if issue_description else 'N/A'}...")
+    print(f"[Booking] call_id={call_id} | from_number={from_number}")
 
     # Create booking in ServiceTitan
     st_result = create_booking(
@@ -198,6 +232,16 @@ async def book_appointment(request: Request):
             store_call_job_mapping(call_id, str(job_id))
             # Also try to update Retell metadata (may fail but that's OK)
             update_call_metadata(call_id, {"job_id": str(job_id)})
+
+        # Store from_number -> job_id mapping (fallback when call_id not available)
+        if from_number and job_id:
+            store_phone_job_mapping(from_number, str(job_id))
+            print(f"[Booking] Stored caller phone mapping: {from_number} -> job {job_id}")
+
+        # Also store customer phone -> job_id mapping (since Retell doesn't pass call metadata)
+        if phone and job_id:
+            store_phone_job_mapping(phone, str(job_id))
+            print(f"[Booking] Stored customer phone mapping: {phone} -> job {job_id}")
 
         # Get dispatch status
         dispatch_info = st_result.get("dispatch", {})

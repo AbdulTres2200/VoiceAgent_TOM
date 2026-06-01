@@ -111,7 +111,7 @@ def send_excavation_email(
 
     try:
         subject = f"New Excavation Job Booked - {customer_name} - {city}"
-        body = f"""New Excavation Job has been booked through Sarah AI.
+        body = f"""New Excavation Job has been booked through Maria AI.
 
 CUSTOMER DETAILS:
 Customer Name: {customer_name}
@@ -131,8 +131,8 @@ RECOMMENDED EXCAVATOR:
 
 Please log into ServiceTitan to view and assign these jobs.
 
-- Sarah AI Dispatch System
-Mr. Rooter Plumbing
+- Maria AI Dispatch System
+Hearn Plumbing, Heating & Air
 """
 
         msg = MIMEMultipart()
@@ -293,19 +293,35 @@ def find_closest_excavator(job_lat, job_lon):
 def get_dispatch_category(job_type_name):
     """
     Map ServiceTitan job type names to dispatch categories.
-    Returns one of: "Sewers/Mainline", "Water Heaters", "Misc Plumbing", "Gas Lines", "Well Pump"
+    Returns one of: "Sewers/Mainline", "Water Heaters", "Misc Plumbing", "Gas Lines", "Well Pump",
+                    "HVAC Cooling", "HVAC Heating", "HVAC Service"
 
     Mapping rules:
     - Gas1, Gas2, anything with "GAS" → Gas Lines
     - WH1, WH2, "Water Heater" → Water Heaters
     - Pump1, Pump2, anything with "PUMP" or "WELL" → Well Pump
     - S1, S2, anything with "DRAIN", "SEWER", "MAINLINE" → Sewers/Mainline
+    - AC, A/C, COOLING, NO COOL → HVAC Cooling
+    - HEAT, FURNACE, BOILER, NO HEAT → HVAC Heating
+    - HVAC, MINISPLIT → HVAC Service
     - P1, P2, P3 and everything else → Misc Plumbing
     """
     if not job_type_name:
         return "Misc Plumbing"
 
     name_upper = job_type_name.upper()
+
+    # HVAC Cooling jobs
+    if "AC" in name_upper or "A/C" in name_upper or "COOLING" in name_upper or "NO COOL" in name_upper or "AIR CONDITION" in name_upper:
+        return "HVAC Cooling"
+
+    # HVAC Heating jobs
+    if "HEAT" in name_upper or "FURNACE" in name_upper or "BOILER" in name_upper or "NO HEAT" in name_upper:
+        return "HVAC Heating"
+
+    # General HVAC jobs
+    if "HVAC" in name_upper or "MINISPLIT" in name_upper or "MINI SPLIT" in name_upper or "DUCTLESS" in name_upper:
+        return "HVAC Service"
 
     # Gas line jobs - check first to avoid GAS1 matching S1/S2
     if "GAS" in name_upper:
@@ -511,6 +527,83 @@ COUNTY_BUSINESS_UNIT_MAP = {
     "monongalia": "Morgantown",
     "monongahela": "Morgantown",
 }
+
+# HVAC Job Type to Business Unit mapping
+# Based on Tom's HVAC Job Types Classification Reference document
+HVAC_JOB_TYPE_BU_MAP = {
+    # H+ Maintenance jobs → HVAC Res Maintenance
+    "H - A/C H+ Maintenance": "HVAC Res Maintenance",
+    "H - A/C H+ Maintenance - Minisplit": "HVAC Res Maintenance",
+    "H - Heating H+ Maintenance": "HVAC Res Maintenance",
+    "H - Heating H+ Maintenance - Boiler": "HVAC Res Maintenance",
+    "H - Heating H+ Maintenance - Oil": "HVAC Res Maintenance",
+    "H - HVAC Air Filter Sale": "HVAC Res Maintenance",
+
+    # Service jobs → HVAC Res Service
+    "H - A/C Service": "HVAC Res Service",
+    "H - A/C Service - Minisplit": "HVAC Res Service",
+    "H - Heating Service": "HVAC Res Service",
+    "H - Heating Service - Boiler": "HVAC Res Service",
+    "H - Heating Service - Oil": "HVAC Res Service",
+    "H - HVAC Callback": "HVAC Res Service",
+    "H - HVAC Mfr Warranty": "HVAC Res Service",
+    "H - No A/C": "HVAC Res Service",
+    "H - No A/C - Minisplit": "HVAC Res Service",
+    "H - No Heat": "HVAC Res Service",
+    "H - No Heat - Boiler": "HVAC Res Service",
+    "H - No Heat - Oil": "HVAC Res Service",
+
+    # Sales/Quote jobs → HVAC Res Sales
+    "H - HVAC Quote": "HVAC Res Sales",
+}
+
+
+def get_business_unit_for_job_type(job_type_name: str) -> dict:
+    """
+    Get the appropriate Business Unit for an HVAC job type.
+    Returns dict with business_unit_id and business_unit_name, or None if not an HVAC job.
+    """
+    if not job_type_name:
+        return None
+
+    # Check exact match first
+    bu_name = HVAC_JOB_TYPE_BU_MAP.get(job_type_name)
+
+    # If no exact match, try partial matching for job types with slight name variations
+    if not bu_name:
+        job_upper = job_type_name.upper()
+        if "H+ MAINTENANCE" in job_upper or "H - A/C H+" in job_upper or "H - HEATING H+" in job_upper:
+            bu_name = "HVAC Res Maintenance"
+        elif "NO A/C" in job_upper or "NO HEAT" in job_upper or "NO AC" in job_upper:
+            bu_name = "HVAC Res Service"
+        elif "SERVICE" in job_upper and ("A/C" in job_upper or "AC" in job_upper or "HEATING" in job_upper or "HVAC" in job_upper):
+            bu_name = "HVAC Res Service"
+        elif "CALLBACK" in job_upper:
+            bu_name = "HVAC Res Service"
+        elif "QUOTE" in job_upper or "ESTIMATE" in job_upper:
+            bu_name = "HVAC Res Sales"
+
+    if not bu_name:
+        return None
+
+    # Look up the actual BU ID from ServiceTitan
+    units, name_to_id = get_business_units_from_st()
+    if bu_name in name_to_id:
+        return {
+            "business_unit_id": name_to_id[bu_name],
+            "business_unit_name": bu_name
+        }
+
+    # Try case-insensitive match
+    for stored_name, bu_id in name_to_id.items():
+        if stored_name.upper() == bu_name.upper():
+            return {
+                "business_unit_id": bu_id,
+                "business_unit_name": stored_name
+            }
+
+    print(f"[HVAC BU] Warning: Could not find BU ID for '{bu_name}'")
+    return None
 
 
 def store_live_call_info(from_number: str, to_number: str):
@@ -747,15 +840,8 @@ def get_business_unit_by_zone(zone_name, city=None, state=None):
             }
         else:
             print(f"[Business Unit] Warning: Mapped to '{bu_name}' but ID not found in ST data")
-            # Try common ID fallbacks
-            if bu_name == "Western PA":
-                return {"business_unit_id": 1239, "business_unit_name": "Western PA"}
-            elif bu_name == "Erie":
-                return {"business_unit_id": name_to_id.get("Erie", 1239), "business_unit_name": "Erie"}
-            elif bu_name == "Morgantown":
-                return {"business_unit_id": name_to_id.get("Morgantown", 1239), "business_unit_name": "Morgantown"}
-            elif bu_name == "Ohio Valley":
-                return {"business_unit_id": name_to_id.get("Ohio Valley", 1239), "business_unit_name": "Ohio Valley"}
+            # Fall back to default from .env
+            return {"business_unit_id": BUSINESS_UNIT_ID, "business_unit_name": "Default"}
     else:
         print(f"[Business Unit] Zone '{cleaned_zone}' not found in county map")
 
@@ -908,21 +994,29 @@ def detect_job_type(issue_description: str, customer_type: str = "Residential",
     # Normalize customer_type
     is_commercial = customer_type.lower() == "commercial" if customer_type else False
 
-    # Default fallback - use commercial fallback if commercial customer
-    if is_commercial:
-        fallback = {
-            "job_type_id": 1447573448,  # Update this if you have a commercial default
-            "job_type_name": "CP2 Commercial Minor Plumbing",
-            "priority": "High",
-            "job_category": "Misc Plumbing"
-        }
-    else:
-        fallback = {
-            "job_type_id": 1447573448,
-            "job_type_name": "P2 Minor Plumbing",
-            "priority": "High",
-            "job_category": "Misc Plumbing"
-        }
+    # Check if issue is HVAC-related for smart fallback
+    # IMPORTANT: Check for water heater FIRST to avoid false HVAC match
+    issue_lower = (issue_description or "").lower()
+
+    # Water heater issues are PLUMBING, not HVAC
+    is_water_heater_issue = 'water heater' in issue_lower or 'hot water' in issue_lower or 'no hot water' in issue_lower
+
+    hvac_keywords = ['ac', 'a/c', 'air condition', 'cooling', 'cool', 'heating',
+                     'furnace', 'boiler', 'hvac', 'thermostat', 'minisplit', 'mini split',
+                     'ductless', 'hot air', 'cold air', 'not cooling', 'not heating',
+                     'no heat', 'no cooling', 'warm air', 'cold house', 'hot house']
+
+    # Only mark as HVAC if NOT a water heater issue
+    is_hvac_issue = not is_water_heater_issue and any(kw in issue_lower for kw in hvac_keywords)
+
+    # Default fallback - Tom's Hearn Plumbing/HVAC job types
+    # Will be overridden with HVAC type if issue is HVAC-related
+    fallback = {
+        "job_type_id": 4449187,  # Tom's "P - Plumbing Service" (default)
+        "job_type_name": "P - Plumbing Service",
+        "priority": "High",
+        "job_category": "Plumbing"
+    }
 
     if not issue_description:
         print("[Job Type] No issue description provided, using fallback")
@@ -998,50 +1092,150 @@ def detect_job_type(issue_description: str, customer_type: str = "Residential",
             messages=[
                 {
                     "role": "system",
-                    "content": """You are an expert plumbing dispatcher. Classify issues into job type CODES.
+                    "content": """You are an expert HVAC and plumbing dispatcher for Hearn Plumbing, Heating & Air. Classify issues into job type names.
 
-IMPORTANT: Respond with ONLY the job type CODE (like WH1, S2, Pump1, GAS1, P2 Minor Plumbing), not the description.
+IMPORTANT: Respond with ONLY the exact job type name from the list provided. Match the format exactly.
 
-CRITICAL CLASSIFICATION RULES:
+=== HVAC CLASSIFICATION RULES ===
 
-S1 Main Line (ONLY for main sewer issues - requires excavation assessment):
-- MULTIPLE drains backing up throughout the house
-- Basement FLOOR DRAIN backing up with sewage
-- Sewage coming up from floor/ground
-- Main sewer line issues affecting whole house
-- Keywords: "main line", "main sewer", "all drains", "basement floor drain", "sewage backup in basement"
+**EMERGENCY - NO COOLING (Priority: High)**
 
-S2 Secondary Drain (for SINGLE fixture drains - NO excavation):
-- ONE drain clogged: washer, sink, tub, shower, toilet
-- Water behind/under ONE appliance (washer, dishwasher)
-- Single fixture backup or slow drain
-- "Washer drain", "kitchen sink", "bathroom sink", "shower drain"
-- Keywords: "behind washer", "under washer", "one drain", "single drain"
+"H - No A/C" - Traditional central A/C with NO cooling:
+- Complete loss of cooling, house is hot, urgent situation
+- "AC not working at all", "No cool air", "AC is dead"
+- "House is 85+ degrees", "Can't cool down"
+- Customer needs same-day/emergency appointment
 
-COMMON MISCLASSIFICATIONS TO AVOID:
-- "Water behind washer" = S2 (NOT S1) - it's a single fixture
-- "Washer drain clog" = S2 (NOT S1) - it's a secondary drain
-- "Sink not draining" = S2 (NOT S1) - it's a single fixture
-- Only use S1 when MULTIPLE drains or MAIN sewer line is mentioned
+"H - No A/C - Minisplit" - Mini-split/ductless with NO cooling:
+- Same as above but for mini-split/ductless systems
+- Customer mentions "mini-split", "ductless", "wall unit", Mitsubishi/Daikin/Fujitsu
 
-Other classifications:
-- Water heater not working/no hot water -> WH1
-- Water heater leaking -> WH2
-- Water heater estimate -> WH3
-- Gas smell/gas leak/gas line issues -> GAS1
-- Gas line to grill/pool/appliances -> GAS2 or GAS3
-- Sump pump or sewage pump -> Pump1
-- Well pump -> Pump2
-- Faucet, toilet, minor leak, frozen pipes -> P2 Minor Plumbing
-- Backflow test, backflow preventer, cross-connection test -> P2 Minor Plumbing
-- Plumbing inspection, compliance inspection -> P2 Minor Plumbing
-- General plumbing service call -> P2 Minor Plumbing
-- Emergency water line break/burst -> P1 Emergency Plumbing
-- Remodel estimate -> P3
-- Dye test, sewer line estimate/inspection -> S3
-- Septic issues -> S4
+**EMERGENCY - NO HEATING (Priority: Urgent)**
 
-WHEN UNSURE: Default to P2 Minor Plumbing for general service calls."""
+"H - No Heat" - Gas/propane/electric furnace with NO heat:
+- Complete loss of heat, house is cold, pipes may freeze
+- "Furnace not working", "No heat at all", "House is freezing"
+- NOT a boiler, NOT oil fuel
+
+"H - No Heat - Boiler" - Boiler system (gas/propane/electric) with NO heat:
+- Customer mentions "boiler", "radiators", "baseboard heat", "steam heat"
+- NOT oil fuel
+
+"H - No Heat - Oil" - ANY oil-fired system with NO heat:
+- Oil furnace OR oil boiler - oil fuel takes priority
+- Customer mentions "oil heat", "oil furnace", "oil boiler", "oil burner"
+
+**SERVICE CALLS - A/C (Priority: Normal)**
+
+"H - A/C Service" - Traditional A/C issues (still has some cooling):
+- AC running but not cooling well, making noise, leaking water
+- Short cycling, weak airflow, ice on unit, refrigerant concerns
+- Customer wants tune-up but is NOT an H+ member
+- NOT a mini-split
+
+"H - A/C Service - Minisplit" - Mini-split issues (still has some cooling):
+- Same symptoms as above but for mini-split/ductless
+- Customer mentions "mini-split", "ductless", "wall unit"
+
+**SERVICE CALLS - HEATING (Priority: Normal)**
+
+"H - Heating Service" - Gas/propane/electric furnace issues (still has some heat):
+- Furnace running but not heating well, making noise
+- Short cycling, pilot issues, thermostat problems
+- NOT a boiler, NOT oil
+
+"H - Heating Service - Boiler" - Boiler issues (gas/propane/electric, still has some heat):
+- Customer mentions "boiler", "radiators", "baseboard", "steam"
+- NOT oil fuel
+
+"H - Heating Service - Oil" - ANY oil system issues (still has some heat):
+- Oil takes priority over equipment type
+- Customer mentions "oil heat", "oil furnace", "oil boiler"
+
+**H+ MEMBER MAINTENANCE (Priority: Low)**
+
+"H - A/C H+ Maintenance" - H+ member routine A/C tune-up:
+- Customer confirms H+ membership AND wants maintenance/tune-up
+- Traditional central A/C (not mini-split)
+- NO symptoms or problems reported
+
+"H - A/C H+ Maintenance - Minisplit" - H+ member mini-split maintenance:
+- H+ member wants maintenance on mini-split/ductless
+
+"H - Heating H+ Maintenance" - H+ member furnace tune-up:
+- H+ member wants maintenance on gas/propane/electric furnace
+- NOT boiler, NOT oil
+
+"H - Heating H+ Maintenance - Boiler" - H+ member boiler maintenance:
+- H+ member wants maintenance on gas/propane/electric boiler
+
+"H - Heating H+ Maintenance - Oil" - H+ member oil system maintenance:
+- H+ member with oil furnace or oil boiler
+
+**SPECIAL HVAC TYPES**
+
+"H - HVAC Callback" (Priority: High):
+- Issue related to work done in last 365 days
+- "You were just here", "Same problem as before", "After your tech left..."
+
+"H - HVAC Quote" (Priority: Normal):
+- Customer wants quote/estimate for NEW system (not repair)
+- "Want to replace my furnace", "Quote for new AC", "System is old, want new one"
+
+=== PLUMBING CLASSIFICATION RULES ===
+
+**DRAIN/SEWER ISSUES**
+
+"P - Sewer Main Line" - ONLY for main sewer issues:
+- MULTIPLE drains backing up throughout house
+- Basement floor drain with sewage
+- Main sewer line affecting whole house
+
+"P - Drain Secondary" - Single fixture drains:
+- ONE drain clogged (sink, tub, shower, toilet, washer)
+- "Water behind washer" = secondary drain (single fixture)
+
+**WATER HEATER ISSUES**
+
+"P - Water Heater- Leaking!!" - Water heater is LEAKING:
+- Water on floor around water heater
+- "Water heater is leaking", "puddle under water heater"
+
+"P - Plumbing Service" - Water heater NOT working (no leak):
+- No hot water, water heater not producing heat
+- "No hot water", "water heater not working"
+- Use this for water heater service calls without leaking
+
+"P - Plumbing Install - Water Heater" - New water heater install:
+- Customer wants to replace/install new water heater
+- "Need a new water heater", "replace water heater"
+
+**OTHER PLUMBING**
+
+"P - Plumbing Emergency Service" - URGENT plumbing:
+- Active water leak/burst pipe
+- Major water damage occurring NOW
+
+"P - Water Leak-Major" - Major water leak (non-emergency):
+- Significant water leak but not emergency level
+
+"P - Plumbing Service" - General plumbing service:
+- Faucet, toilet, minor leak, general plumbing issues
+- Default for plumbing service calls
+
+=== DECISION PRIORITY ===
+1. Check fuel type: OIL always routes to Oil job types
+2. Check equipment: Boiler/Mini-split have specific job types
+3. Check urgency: No cooling/No heat = emergency types
+4. Check membership: H+ member maintenance vs regular service
+5. Check if callback: Related to recent work = Callback
+6. Check if quote: Wants replacement = Quote
+
+WHEN UNSURE:
+- HVAC cooling issue -> "H - A/C Service"
+- HVAC heating issue -> "H - Heating Service"
+- Water heater issue -> "P - Plumbing Service"
+- Plumbing issue -> "P - Plumbing Service\""""
                 },
                 {
                     "role": "user",
@@ -1073,8 +1267,15 @@ Reply with ONLY the code (e.g., WH1, S2, Pump1).{customer_type_note}{context_not
                     "priority": jt["priority"],
                     "job_category": get_dispatch_category(jt["name"])
                 }
+                # Add business unit for HVAC job types
+                bu_info = get_business_unit_for_job_type(jt["name"])
+                if bu_info:
+                    result["business_unit_id"] = bu_info["business_unit_id"]
+                    result["business_unit_name"] = bu_info["business_unit_name"]
                 _job_type_detection_cache[cache_key] = result
                 print(f"[Job Type] Detected: {result['job_type_name']} (ID: {result['job_type_id']}) Priority: {result['priority']} Category: {result['job_category']}")
+                if bu_info:
+                    print(f"[Job Type] Business Unit: {result['business_unit_name']} (ID: {result['business_unit_id']})")
                 print("[Job Type] Method: AI exact match")
                 return result
 
@@ -1090,8 +1291,15 @@ Reply with ONLY the code (e.g., WH1, S2, Pump1).{customer_type_note}{context_not
                     "priority": jt["priority"],
                     "job_category": get_dispatch_category(jt["name"])
                 }
+                # Add business unit for HVAC job types
+                bu_info = get_business_unit_for_job_type(jt["name"])
+                if bu_info:
+                    result["business_unit_id"] = bu_info["business_unit_id"]
+                    result["business_unit_name"] = bu_info["business_unit_name"]
                 _job_type_detection_cache[cache_key] = result
                 print(f"[Job Type] Detected: {result['job_type_name']} (ID: {result['job_type_id']}) Priority: {result['priority']} Category: {result['job_category']}")
+                if bu_info:
+                    print(f"[Job Type] Business Unit: {result['business_unit_name']} (ID: {result['business_unit_id']})")
                 print("[Job Type] Method: AI partial match")
                 return result
 
@@ -1107,19 +1315,107 @@ Reply with ONLY the code (e.g., WH1, S2, Pump1).{customer_type_note}{context_not
                     "priority": jt["priority"],
                     "job_category": get_dispatch_category(jt["name"])
                 }
+                # Add business unit for HVAC job types
+                bu_info = get_business_unit_for_job_type(jt["name"])
+                if bu_info:
+                    result["business_unit_id"] = bu_info["business_unit_id"]
+                    result["business_unit_name"] = bu_info["business_unit_name"]
                 _job_type_detection_cache[cache_key] = result
                 print(f"[Job Type] Detected: {result['job_type_name']} (ID: {result['job_type_id']}) Priority: {result['priority']} Category: {result['job_category']}")
+                if bu_info:
+                    print(f"[Job Type] Business Unit: {result['business_unit_name']} (ID: {result['business_unit_id']})")
                 print("[Job Type] Method: AI summary match")
                 return result
 
-        # No match found
-        print(f"[Job Type] WARNING: No match for '{cleaned_name}', using fallback")
+        # No match found - try smart fallback based on issue type
+        print(f"[Job Type] WARNING: No match for '{cleaned_name}', using smart fallback")
+
+        # WATER HEATER fallback - check first before HVAC
+        if is_water_heater_issue:
+            # Look for water heater job types in order of preference
+            wh_keywords = ['water heater', 'wh']
+            for jt in job_types:
+                jt_name_lower = jt["name"].lower()
+                if any(kw in jt_name_lower for kw in wh_keywords):
+                    result = {
+                        "job_type_id": jt["id"],
+                        "job_type_name": jt["name"],
+                        "priority": jt["priority"],
+                        "job_category": "Plumbing"
+                    }
+                    _job_type_detection_cache[cache_key] = result
+                    print(f"[Job Type] Detected: {result['job_type_name']} (ID: {result['job_type_id']}) Priority: {result['priority']}")
+                    print("[Job Type] Method: smart water heater fallback")
+                    return result
+            # If no specific water heater type found, use P - Plumbing Service
+            for jt in job_types:
+                if jt["name"] == "P - Plumbing Service":
+                    result = {
+                        "job_type_id": jt["id"],
+                        "job_type_name": jt["name"],
+                        "priority": "High",  # Upgrade to High for no hot water
+                        "job_category": "Plumbing"
+                    }
+                    _job_type_detection_cache[cache_key] = result
+                    print(f"[Job Type] Detected: {result['job_type_name']} (ID: {result['job_type_id']}) Priority: High (water heater issue)")
+                    print("[Job Type] Method: plumbing service fallback for water heater")
+                    return result
+
+        # If HVAC issue, try to find an HVAC job type from the available list
+        if is_hvac_issue:
+            hvac_type_keywords = ['ac', 'a/c', 'heat', 'hvac', 'air', 'furnace', 'cooling', 'heating']
+            for jt in job_types:
+                jt_name_lower = jt["name"].lower()
+                jt_summary_lower = (jt["summary"] or "").lower()
+                if any(kw in jt_name_lower or kw in jt_summary_lower for kw in hvac_type_keywords):
+                    result = {
+                        "job_type_id": jt["id"],
+                        "job_type_name": jt["name"],
+                        "priority": jt["priority"],
+                        "job_category": "HVAC"
+                    }
+                    # Add business unit for HVAC job types
+                    bu_info = get_business_unit_for_job_type(jt["name"])
+                    if bu_info:
+                        result["business_unit_id"] = bu_info["business_unit_id"]
+                        result["business_unit_name"] = bu_info["business_unit_name"]
+                    _job_type_detection_cache[cache_key] = result
+                    print(f"[Job Type] Detected: {result['job_type_name']} (ID: {result['job_type_id']}) Priority: {result['priority']}")
+                    if bu_info:
+                        print(f"[Job Type] Business Unit: {result['business_unit_name']} (ID: {result['business_unit_id']})")
+                    print("[Job Type] Method: smart HVAC fallback")
+                    return result
+
         print(f"[Job Type] Detected: {fallback['job_type_name']} (ID: {fallback['job_type_id']}) Priority: {fallback['priority']}")
         print("[Job Type] Method: fallback")
         return fallback
 
     except Exception as e:
         print(f"[Job Type] OpenAI error: {e}")
+
+        # Try smart fallback on error too
+        if is_hvac_issue and 'job_types' in dir():
+            for jt in job_types:
+                jt_name_lower = jt["name"].lower()
+                jt_summary_lower = (jt["summary"] or "").lower()
+                if any(kw in jt_name_lower or kw in jt_summary_lower for kw in ['ac', 'heat', 'hvac', 'air', 'furnace']):
+                    result = {
+                        "job_type_id": jt["id"],
+                        "job_type_name": jt["name"],
+                        "priority": jt["priority"],
+                        "job_category": "HVAC"
+                    }
+                    # Add business unit for HVAC job types
+                    bu_info = get_business_unit_for_job_type(jt["name"])
+                    if bu_info:
+                        result["business_unit_id"] = bu_info["business_unit_id"]
+                        result["business_unit_name"] = bu_info["business_unit_name"]
+                    print(f"[Job Type] Detected: {result['job_type_name']} (ID: {result['job_type_id']}) Priority: {result['priority']}")
+                    if bu_info:
+                        print(f"[Job Type] Business Unit: {result['business_unit_name']} (ID: {result['business_unit_id']})")
+                    print("[Job Type] Method: smart HVAC fallback (error recovery)")
+                    return result
+
         print(f"[Job Type] Detected: {fallback['job_type_name']} (ID: {fallback['job_type_id']}) Priority: {fallback['priority']}")
         print("[Job Type] Method: fallback (error)")
         return fallback
@@ -1128,8 +1424,194 @@ Reply with ONLY the code (e.g., WH1, S2, Pump1).{customer_type_note}{context_not
 # Default fallback campaign for Retell calls
 RETELL_CAMPAIGN_ID = 1405279506
 RETELL_CAMPAIGN_NAME = "Branding - Pittsburgh"
-RETELL_BUSINESS_UNIT_ID = 1239
-RETELL_BUSINESS_UNIT_NAME = "Western PA"
+RETELL_BUSINESS_UNIT_ID = BUSINESS_UNIT_ID  # Use default from .env (405 for Tom)
+RETELL_BUSINESS_UNIT_NAME = "PLMG Res Service"  # Tom's default BU name
+
+# Campaign cache (24 hour TTL)
+_campaigns_cache = {"data": [], "expires_at": 0}
+_CAMPAIGNS_CACHE_TTL = 86400  # 24 hours
+
+
+def get_all_campaigns(force_refresh: bool = False) -> list:
+    """
+    Fetch all active campaigns from ServiceTitan.
+    Results are cached for 24 hours.
+    """
+    import time as _time
+    current_time = _time.time()
+
+    if not force_refresh and _campaigns_cache["data"] and current_time < _campaigns_cache["expires_at"]:
+        return _campaigns_cache["data"]
+
+    print("[Campaigns] Fetching campaigns from ServiceTitan...")
+    token = get_access_token()
+    headers = {
+        "Authorization": f"Bearer {token}",
+        "ST-App-Key": APP_KEY
+    }
+
+    all_campaigns = []
+    page = 1
+
+    while True:
+        url = f"https://api.servicetitan.io/marketing/v2/tenant/{TENANT_ID}/campaigns"
+        params = {"pageSize": 100, "active": "true", "page": page}
+        resp = requests.get(url, headers=headers, params=params)
+
+        if resp.status_code != 200:
+            print(f"[Campaigns] API error: {resp.status_code}")
+            break
+
+        data = resp.json().get("data", [])
+        if not data:
+            break
+
+        for c in data:
+            # Handle category - can be None, dict, or other
+            category_obj = c.get("category")
+            category_name = ""
+            if isinstance(category_obj, dict):
+                category_name = category_obj.get("name", "")
+            elif isinstance(category_obj, str):
+                category_name = category_obj
+
+            # Handle businessUnit - can be None, dict, or other
+            bu_obj = c.get("businessUnit")
+            bu_id = None
+            bu_name = ""
+            if isinstance(bu_obj, dict):
+                bu_id = bu_obj.get("id")
+                bu_name = bu_obj.get("name", "")
+
+            campaign_info = {
+                "id": c.get("id"),
+                "name": c.get("name", ""),
+                "category": category_name,
+                "business_unit_id": bu_id,
+                "business_unit_name": bu_name,
+                "active": c.get("active", True)
+            }
+            all_campaigns.append(campaign_info)
+
+        if len(data) < 100:
+            break
+        page += 1
+
+    print(f"[Campaigns] Cached {len(all_campaigns)} active campaigns")
+    _campaigns_cache["data"] = all_campaigns
+    _campaigns_cache["expires_at"] = current_time + _CAMPAIGNS_CACHE_TTL
+
+    return all_campaigns
+
+
+def detect_campaign_from_referral(referral_response: str) -> dict:
+    """
+    Use AI to detect the best matching campaign based on customer's referral response.
+
+    Args:
+        referral_response: Customer's answer to "How did you hear about us?"
+
+    Returns:
+        dict with campaign_id, campaign_name, confidence, and reason
+    """
+    from openai import OpenAI
+    import os
+
+    # Get all available campaigns
+    campaigns = get_all_campaigns()
+
+    if not campaigns:
+        print("[Campaign Detection] No campaigns available, using default")
+        return {
+            "campaign_id": RETELL_CAMPAIGN_ID,
+            "campaign_name": RETELL_CAMPAIGN_NAME,
+            "confidence": "low",
+            "reason": "No campaigns available for matching"
+        }
+
+    # Build campaign list for AI
+    campaign_list = "\n".join([
+        f"- ID: {c['id']} | Name: {c['name']} | Category: {c['category']}"
+        for c in campaigns
+    ])
+
+    # Use OpenAI to match referral to campaign
+    try:
+        client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
+
+        response = client.chat.completions.create(
+            model="gpt-4o-mini",
+            max_tokens=150,
+            temperature=0,
+            messages=[
+                {
+                    "role": "system",
+                    "content": f"""You are a campaign matching assistant for a plumbing/HVAC company.
+
+Given a customer's response to "How did you hear about us?", match it to the best campaign from this list:
+
+{campaign_list}
+
+MATCHING RULES:
+- "Google", "online", "searched", "internet" → Look for Google/SEO/PPC campaigns
+- "Friend", "neighbor", "family", "referral", "someone recommended" → Look for Referral campaigns
+- "Yard sign", "sign", "truck", "van", "saw your truck" → Look for Branding/Yard Sign campaigns
+- "Facebook", "Instagram", "social media" → Look for Social Media campaigns
+- "TV", "television", "commercial" → Look for TV campaigns
+- "Radio" → Look for Radio campaigns
+- "Mailer", "postcard", "mail", "flyer" → Look for Direct Mail campaigns
+- "Repeat customer", "used you before", "came back" → Look for Repeat/Returning Customer campaigns
+- "Angie", "Angi", "HomeAdvisor", "Thumbtack" → Look for those specific lead source campaigns
+
+Respond in this EXACT format:
+CAMPAIGN_ID: [number]
+CAMPAIGN_NAME: [name]
+CONFIDENCE: high/medium/low
+REASON: [brief explanation]"""
+                },
+                {
+                    "role": "user",
+                    "content": f"Customer said: \"{referral_response}\""
+                }
+            ]
+        )
+
+        ai_response = response.choices[0].message.content.strip()
+        print(f"[Campaign Detection] AI response: {ai_response}")
+
+        # Parse response
+        result = {
+            "campaign_id": RETELL_CAMPAIGN_ID,
+            "campaign_name": RETELL_CAMPAIGN_NAME,
+            "confidence": "low",
+            "reason": "Could not parse AI response"
+        }
+
+        for line in ai_response.split("\n"):
+            line = line.strip()
+            if line.startswith("CAMPAIGN_ID:"):
+                try:
+                    result["campaign_id"] = int(line.replace("CAMPAIGN_ID:", "").strip())
+                except:
+                    pass
+            elif line.startswith("CAMPAIGN_NAME:"):
+                result["campaign_name"] = line.replace("CAMPAIGN_NAME:", "").strip()
+            elif line.startswith("CONFIDENCE:"):
+                result["confidence"] = line.replace("CONFIDENCE:", "").strip().lower()
+            elif line.startswith("REASON:"):
+                result["reason"] = line.replace("REASON:", "").strip()
+
+        print(f"[Campaign Detection] Matched: {result['campaign_name']} (ID: {result['campaign_id']}) - {result['confidence']}")
+        return result
+
+    except Exception as e:
+        print(f"[Campaign Detection] Error: {e}")
+        return {
+            "campaign_id": RETELL_CAMPAIGN_ID,
+            "campaign_name": RETELL_CAMPAIGN_NAME,
+            "confidence": "low",
+            "reason": f"AI detection failed: {str(e)}"
+        }
 
 
 def get_live_call_campaign(from_number: str, to_number: str):
@@ -1871,10 +2353,10 @@ Linked Jobs:
     except Exception as e:
         print(f"[Excavation] Excavator search failed: {e}")
 
-    # Department head info
-    DEPT_HEAD_EMAIL = "bguntrum@rooter2.com"
-    DEPT_HEAD_NAME = "Bill Guntrum"
-    DEPT_HEAD_PHONE = "+1 (724) 544-1058"
+    # Department head info (TODO: Get from Tom)
+    DEPT_HEAD_EMAIL = os.getenv("DEPT_HEAD_EMAIL", "")
+    DEPT_HEAD_NAME = os.getenv("DEPT_HEAD_NAME", "Hearn Plumbing Team")
+    DEPT_HEAD_PHONE = os.getenv("DEPT_HEAD_PHONE", "")
 
     # Track emails sent
     emails_sent_list = []
@@ -1888,7 +2370,7 @@ Linked Jobs:
 
             try:
                 subject = f"New Excavation Job Assigned - {summary[:50]}"
-                body = f"""New Excavation Job has been booked through Sarah AI.
+                body = f"""New Excavation Job has been booked through Maria AI.
 
 YOU HAVE BEEN SELECTED as the closest available excavator.
 
@@ -1910,8 +2392,8 @@ Current Status: {closest_excavator['status']}
 
 Please log into ServiceTitan to view the job details.
 
-- Sarah AI Dispatch System
-Mr. Rooter Plumbing
+- Maria AI Dispatch System
+Hearn Plumbing, Heating & Air
 """
 
                 msg = MIMEMultipart()
@@ -1939,7 +2421,7 @@ Mr. Rooter Plumbing
         print(f"\n[Excavation] Sending email to department head ({DEPT_HEAD_EMAIL})...")
         try:
             subject = f"New Excavation Job Booked - {customer_name or 'Customer'}"
-            body = f"""New Excavation Job has been booked through Sarah AI.
+            body = f"""New Excavation Job has been booked through Maria AI.
 
 CUSTOMER DETAILS:
 Customer: {customer_name or 'N/A'}
@@ -1959,8 +2441,8 @@ ASSIGNED EXCAVATOR:
 
 Please log into ServiceTitan to view and manage these jobs.
 
-- Sarah AI Dispatch System
-Mr. Rooter Plumbing
+- Maria AI Dispatch System
+Hearn Plumbing, Heating & Air
 """
 
             msg = MIMEMultipart()
@@ -1984,10 +2466,10 @@ Mr. Rooter Plumbing
         if customer_email and "@" in customer_email:
             print(f"\n[Excavation] Sending thank you email to customer ({customer_email})...")
             try:
-                subject = "Thank You for Booking with Mr. Rooter Plumbing"
+                subject = "Thank You for Booking with Hearn Plumbing, Heating & Air"
                 body = f"""Dear {customer_name or 'Valued Customer'},
 
-Thank you for booking an excavation job with Mr. Rooter Plumbing!
+Thank you for booking an excavation job with Hearn Plumbing, Heating & Air!
 
 YOUR APPOINTMENT DETAILS:
 Address: {formatted_address or 'N/A'}
@@ -2004,7 +2486,7 @@ Phone: {DEPT_HEAD_PHONE}
 We look forward to serving you!
 
 Best regards,
-Mr. Rooter Plumbing
+Hearn Plumbing, Heating & Air
 """
 
                 msg = MIMEMultipart()
@@ -2169,6 +2651,13 @@ def create_booking(customer_name, address, phone, email, issue_description,
         )
         detected_job_type_id = job_type_result["job_type_id"]
         detected_priority = job_type_result["priority"]
+
+        # HVAC jobs have job-type-specific business units - override zone/campaign BU
+        if "business_unit_id" in job_type_result and job_type_result["business_unit_id"]:
+            business_unit_id = job_type_result["business_unit_id"]
+            bu_source = f"job_type ({job_type_result.get('business_unit_name', 'HVAC')})"
+            print(f"[ST] Using job-type-specific BU: {job_type_result['business_unit_name']} (ID: {business_unit_id})")
+
     print(f"[ST] Using job_type_id: {detected_job_type_id}, priority: {detected_priority}")
 
     headers = {
@@ -2449,7 +2938,7 @@ def create_booking(customer_name, address, phone, email, issue_description,
         "businessUnitId": business_unit_id,
         "campaignId": campaign_id,
         "priority": detected_priority,
-        "customFields": custom_fields,
+        # customFields removed - Tom's account doesn't use job custom fields
         "appointments": [
             {
                 "start": parsed_start,
@@ -2580,7 +3069,7 @@ def create_booking(customer_name, address, phone, email, issue_description,
 
     result = {
         "status": "success",
-        "message": f"Your appointment has been booked successfully. Your job number is {job_id}. We will reach out before arrival. Thank you for calling Mr. Rooter.",
+        "message": f"Your appointment has been booked successfully. Your job number is {job_id}. We will reach out before arrival. Thank you for calling Hearn Plumbing.",
         "job_id": job_id,
         "customer_id": customer_id,
         "job_category": job_type_result.get("job_category", "Misc Plumbing")

@@ -1,0 +1,14 @@
+{
+  "type": "object",
+  "properties": {
+    "is_hplus_member": {
+      "type": "boolean",
+      "description": "Whether customer is a verified H+ member. Use the value from check_service_area response."
+    },
+    "is_emergency": {
+      "type": "boolean",
+      "description": "Set to TRUE if: AC not working at all, furnace/heat not working at all, house very hot/cold, baby/elderly affected. Set to FALSE for: minor issues, maintenance, tune-ups, quotes."
+    }
+  },
+  "required": ["is_hplus_member", "is_emergency"]
+}

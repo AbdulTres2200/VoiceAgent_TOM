@@ -23,6 +23,38 @@ _service_area_cache = {
 # Google Maps API timeout (seconds)
 GOOGLE_API_TIMEOUT = 3
 
+# Zip code to city mapping for service area (fallback when Google can't determine city)
+ZIP_TO_CITY = {
+    # Ohio - Lake County
+    "44094": "Willoughby",
+    "44092": "Wickliffe",
+    "44095": "Eastlake",
+    "44077": "Painesville",
+    "44060": "Mentor",
+    "44057": "Madison",
+    # Ohio - Cuyahoga County
+    "44124": "Lyndhurst",
+    "44143": "Richmond Heights",
+    "44117": "Euclid",
+    "44121": "South Euclid",
+    "44112": "East Cleveland",
+    # Ohio - Geauga County
+    "44024": "Chardon",
+    "44021": "Burton",
+    "44046": "Huntsburg",
+    # Ohio - Ashtabula County
+    "44004": "Ashtabula",
+    "44041": "Geneva",
+    "44010": "Austinburg",
+    # Pennsylvania
+    "15219": "Pittsburgh",
+    "15213": "Pittsburgh",
+    "15232": "Pittsburgh",
+    "15206": "Pittsburgh",
+    # West Virginia
+    "26003": "Wheeling",
+}
+
 # Token cache (shared pattern with servicetitan.py)
 _token_cache = {
     "access_token": None,
@@ -230,6 +262,13 @@ def parse_address_google(address_string: str, google_api_key: str = None):
                         result["zip"] = zip_match.group(1)
                         print(f"  Google missing zip, extracted from input: {result['zip']}")
 
+                # Fallback: if Google didn't return city, look up from zip code
+                if not result["city"] and result["zip"]:
+                    city_from_zip = ZIP_TO_CITY.get(result["zip"])
+                    if city_from_zip:
+                        result["city"] = city_from_zip
+                        print(f"  Google missing city, extracted from zip {result['zip']}: {city_from_zip}")
+
                 print(f"  Google result: {result['street']}, {result['city']}, {result['state']} {result['zip']}")
                 return result
 
@@ -258,6 +297,13 @@ def parse_address_google(address_string: str, google_api_key: str = None):
         result["zip"] = parsed.get("ZipCode", "")[:5] if parsed.get("ZipCode") else ""
         result["formatted_address"] = address_string
         result["method"] = "usaddress"
+
+        # Fallback: if city is empty, look up from zip code
+        if not result["city"] and result["zip"]:
+            city_from_zip = ZIP_TO_CITY.get(result["zip"])
+            if city_from_zip:
+                result["city"] = city_from_zip
+                print(f"  usaddress missing city, extracted from zip {result['zip']}: {city_from_zip}")
 
         print(f"  usaddress result: {result['street']}, {result['city']}, {result['state']} {result['zip']}")
 

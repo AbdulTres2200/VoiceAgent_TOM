@@ -9,6 +9,9 @@ RETELL_API_KEY = os.getenv("RETELL_API_KEY")
 # Local store to map call_id to job_id (for webhook lookup)
 call_job_mapping = {}
 
+# Secondary mapping: from_number -> job_id (for when call_id isn't available)
+phone_job_mapping = {}
+
 
 def store_call_job_mapping(call_id: str, job_id: str):
     """Store call_id -> job_id mapping for webhook lookup."""
@@ -17,9 +20,35 @@ def store_call_job_mapping(call_id: str, job_id: str):
         print(f"[Retell] Stored mapping: {call_id} -> job_id {job_id}")
 
 
+def store_phone_job_mapping(from_number: str, job_id: str):
+    """Store from_number -> job_id mapping for webhook lookup when call_id isn't available."""
+    if from_number and job_id:
+        # Clean the phone number
+        clean = from_number.replace("-", "").replace(" ", "").replace("(", "").replace(")", "")
+        if clean.startswith("+1"):
+            clean = clean[2:]
+        elif clean.startswith("+"):
+            clean = clean[1:]
+        clean = clean[-10:] if len(clean) >= 10 else clean
+
+        phone_job_mapping[clean] = str(job_id)
+        print(f"[Retell] Stored phone mapping: {clean} -> job_id {job_id}")
+
+
 def get_job_id_for_call(call_id: str) -> str:
     """Get job_id for a call_id from local store."""
     return call_job_mapping.get(call_id)
+
+
+def get_job_id_for_phone(from_number: str) -> str:
+    """Get job_id for a from_number from local store."""
+    clean = from_number.replace("-", "").replace(" ", "").replace("(", "").replace(")", "")
+    if clean.startswith("+1"):
+        clean = clean[2:]
+    elif clean.startswith("+"):
+        clean = clean[1:]
+    clean = clean[-10:] if len(clean) >= 10 else clean
+    return phone_job_mapping.get(clean)
 
 
 def update_call_metadata(call_id: str, metadata: dict) -> bool:

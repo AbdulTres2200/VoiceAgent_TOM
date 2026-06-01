@@ -1,0 +1,38 @@
+{
+  "name": "book_appointment",
+  "description": "Create a booking in ServiceTitan. Call this AFTER customer confirms the service fee and chooses an appointment time. You MUST include the issue description with full details about the customer's problem.",
+  "parameters": {
+    "type": "object",
+    "properties": {
+      "customer_name": {
+        "type": "string",
+        "description": "Customer's full name (First Last). Example: 'John Smith'"
+      },
+      "phone": {
+        "type": "string",
+        "description": "Customer's primary phone number"
+      },
+      "email": {
+        "type": "string",
+        "description": "Customer's email address"
+      },
+      "address": {
+        "type": "string",
+        "description": "Full service address including street, city, state, and zip. Example: '123 Main Street, Painesville, OH 44077'"
+      },
+      "issue": {
+        "type": "string",
+        "description": "REQUIRED: Full description of customer's problem. Include: what's wrong, equipment type (AC, furnace, boiler, etc.), system age if known, how long problem has been occurring, any vulnerable occupants (baby, elderly). Example: 'AC not working at all, no air from vents, 10 year old system, started yesterday, has baby in home'"
+      },
+      "appointment_time": {
+        "type": "string",
+        "description": "Requested appointment window. Use exactly: 'morning 8-12' for morning, 'afternoon 12-4' for afternoon, or 'asap' for emergency same-day service"
+      },
+      "is_emergency": {
+        "type": "boolean",
+        "description": "Set to TRUE for No A/C (no cooling at all) or No Heat (no heating at all) situations, especially with vulnerable occupants. Set to FALSE for minor issues, maintenance, tune-ups, quotes."
+      }
+    },
+    "required": ["customer_name", "phone", "email", "address", "issue", "appointment_time", "is_emergency"]
+  }
+}

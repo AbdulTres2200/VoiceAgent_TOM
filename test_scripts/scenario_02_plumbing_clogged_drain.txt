@@ -1,0 +1,91 @@
+================================================================================
+VOICE AGENT TEST SCRIPT - SCENARIO 2
+New Customer - Clogged Drain (Plumbing - Business Hours)
+================================================================================
+
+PHONE NUMBER TO CALL: +1(440)336-8823
+
+--------------------------------------------------------------------------------
+YOUR CHARACTER INFORMATION (Memorize Before Calling)
+--------------------------------------------------------------------------------
+
+Name:           Michael Torres
+Phone:          440-555-2468
+Email:          mike.torres@email.com
+Address:        789 Maple Drive, Willoughby, OH 44094
+
+Your Problem:   Your kitchen sink is completely clogged and won't drain at all.
+                Water is backing up. You've tried a plunger but it didn't work.
+                The house is 15 years old.
+
+Preferred Time: Afternoon window (12pm-4pm)
+
+How you heard:  Google search
+
+--------------------------------------------------------------------------------
+HOW THE CALL SHOULD GO
+--------------------------------------------------------------------------------
+
+1. Maria will greet you and ask how she can help
+
+2. Say something like:
+   "Hi, my kitchen sink is clogged and won't drain"
+
+3. Maria will ask if you're an H+ Member:
+   - Say: "No, this is my first time calling"
+
+4. Maria will ask how you heard about them:
+   - Say: "Google"
+   - She should say something brief like "Awesome, glad you found us!" and move on
+   - She should NOT ask follow-up questions about Google reviews
+
+5. Maria will collect your information:
+   - Name: Michael Torres
+   - Address: 789 Maple Drive, Willoughby, OH 44094
+   - Phone: 440-555-2468
+   - Email: mike.torres@email.com
+
+6. Maria will ask about the problem:
+   - Tell her: "The kitchen sink is completely clogged. Water won't drain at all.
+     I tried a plunger but it didn't help. The house is about 15 years old."
+
+7. Maria should mention the $99 service fee and WAIT for you to confirm
+   - Say: "Yes, that's fine"
+
+8. Maria will ask about appointment time:
+   - Say: "Afternoon works better for me"
+
+9. Maria will confirm each step ONE AT A TIME:
+   - Address confirmation → Say "Yes"
+   - Call or text preference → Say "Text"
+   - Fee confirmation → Say "Yes"
+
+--------------------------------------------------------------------------------
+WHAT TO CHECK (Mark Pass/Fail)
+--------------------------------------------------------------------------------
+
+[ ] Maria greeted you professionally
+[ ] Maria asked about H+ membership
+[ ] Maria asked how you heard about them
+[ ] Maria did NOT ask follow-up questions about Google (like "which reviews?")
+[ ] Maria collected name, address, phone, email ONE AT A TIME
+[ ] Maria repeated back information SLOWLY with pauses
+[ ] Maria asked about the problem
+[ ] Maria mentioned the $99 service fee
+[ ] Maria WAITED for you to confirm the fee before continuing
+[ ] Maria offered morning or afternoon windows
+[ ] Maria confirmed address and WAITED for response
+[ ] Maria asked call or text and WAITED for response
+[ ] Maria confirmed fee again and WAITED for response
+[ ] Maria did not rush through the final confirmation
+
+--------------------------------------------------------------------------------
+NOTES (Write any issues or observations here)
+--------------------------------------------------------------------------------
+
+
+
+
+--------------------------------------------------------------------------------
+RESULT:  [ ] PASS    [ ] FAIL
+--------------------------------------------------------------------------------

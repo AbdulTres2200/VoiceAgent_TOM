@@ -1,0 +1,14 @@
+{
+  "name": "detect_campaign",
+  "description": "Detect the best matching marketing campaign based on how the customer heard about us. Call this AFTER the customer answers 'How did you hear about us?' to get the correct campaign for tracking.",
+  "parameters": {
+    "type": "object",
+    "properties": {
+      "referral_response": {
+        "type": "string",
+        "description": "The customer's answer to 'How did you hear about us?' Examples: 'Google', 'a friend recommended you', 'saw your yard sign', 'Facebook ad', 'used you before'"
+      }
+    },
+    "required": ["referral_response"]
+  }
+}

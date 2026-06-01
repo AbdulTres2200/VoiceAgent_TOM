@@ -1,9 +1,18 @@
 {
   "name": "check_business_hours",
-  "description": "Check if current time is within business hours (Mon-Fri 8AM-6PM EST). Call this AFTER booking an emergency to determine where to transfer the caller. Returns transfer_to: 'callcentre' for business hours, or 'owner' for after hours.",
+  "description": "Check current business hours, service fee, and eligibility. Call this to determine what fee to quote and whether the customer can book at the current time. Returns period (standard/after_hours/weekend/holiday), fee amount, and eligibility status.",
   "parameters": {
     "type": "object",
-    "properties": {},
+    "properties": {
+      "is_hplus_member": {
+        "type": "boolean",
+        "description": "Whether the customer is an H+ Member. Set to true if they confirmed H+ membership."
+      },
+      "days_since_last_service": {
+        "type": "integer",
+        "description": "Number of days since we last serviced this customer. Use this if customer mentions recent service. Leave empty if unknown."
+      }
+    },
     "required": []
   }
 }

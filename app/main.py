@@ -5,9 +5,9 @@ from dotenv import load_dotenv
 from app.routes import booking
 from app.webhooks import retell_webhook
 from app.webhooks.retell_webhook import is_lead_already_created, mark_lead_created
-from app.services.retell import get_job_id_for_call
+from app.services.retell import get_job_id_for_call, get_job_id_for_phone
 from app.services.servicetitan_notes import post_job_note
-from app.services.servicetitan import test_connection, lookup_customer_by_phone, explore_account, lookup_by_address, fetch_account_config, get_campaign_from_call, get_campaign_details, get_latest_call, get_call_details, test_telecom, get_live_call_campaign, get_zones, get_job_types, get_job_types_from_st, detect_job_type, store_live_call_info, parse_appointment_time, get_business_unit_by_zone, get_business_units_from_st, store_service_area_business_unit, store_service_area_address, store_service_area_bu_by_address, create_lead, get_access_token, TENANT_ID, APP_KEY, clean_phone, create_excavation_jobs, EXCAVATOR_EMAILS_BY_ID, send_excavation_email
+from app.services.servicetitan import test_connection, lookup_customer_by_phone, explore_account, lookup_by_address, fetch_account_config, get_campaign_from_call, get_campaign_details, get_latest_call, get_call_details, test_telecom, get_live_call_campaign, get_zones, get_job_types, get_job_types_from_st, detect_job_type, store_live_call_info, parse_appointment_time, get_business_unit_by_zone, get_business_units_from_st, store_service_area_business_unit, store_service_area_address, store_service_area_bu_by_address, create_lead, get_access_token, TENANT_ID, APP_KEY, clean_phone, create_excavation_jobs, EXCAVATOR_EMAILS_BY_ID, send_excavation_email, get_all_campaigns, detect_campaign_from_referral
 from app.services.service_area import check_service_area, get_service_area_zips, preload_service_area_cache
 from app.services.email_notify import send_call_summary
 
@@ -15,6 +15,57 @@ load_dotenv()
 
 GOOGLE_MAPS_API_KEY = os.getenv("GOOGLE_MAPS_API_KEY")
 print(f"[Config] GOOGLE_MAPS_API_KEY: {'SET (' + str(len(GOOGLE_MAPS_API_KEY)) + ' chars)' if GOOGLE_MAPS_API_KEY else 'NOT SET'}")
+
+# H+ Membership detection via Memberships API
+def check_hplus_membership(location_id: int) -> bool:
+    """
+    Check if a location has active H+ membership.
+
+    Logic:
+    1. First check recurring services (fast, covers most H+ members)
+    2. If none found, check memberships endpoint (catches new members without services yet)
+
+    Returns True if location has H+ membership.
+    """
+    import requests as req
+    try:
+        token = get_access_token()
+        headers = {
+            "Authorization": f"Bearer {token}",
+            "ST-App-Key": APP_KEY
+        }
+
+        # Method 1: Check recurring services (fast, most common)
+        rs_resp = req.get(
+            f"https://api.servicetitan.io/memberships/v2/tenant/{TENANT_ID}/recurring-services",
+            headers=headers,
+            params={"locationIds": str(location_id), "active": "true"}
+        )
+        if rs_resp.status_code == 200:
+            services = [s for s in rs_resp.json().get("data", []) if s.get("locationId") == location_id]
+            if len(services) > 0:
+                print(f"[H+ Check] Location {location_id}: H+ Member (has {len(services)} recurring services)")
+                return True
+
+        # Method 2: Check memberships directly (for new members without services yet)
+        mem_resp = req.get(
+            f"https://api.servicetitan.io/memberships/v2/tenant/{TENANT_ID}/memberships",
+            headers=headers,
+            params={"status": "Active", "pageSize": 200}
+        )
+        if mem_resp.status_code == 200:
+            memberships = mem_resp.json().get("data", [])
+            location_memberships = [m for m in memberships if m.get("locationId") == location_id and m.get("status") == "Active"]
+            if len(location_memberships) > 0:
+                print(f"[H+ Check] Location {location_id}: H+ Member (has {len(location_memberships)} active memberships)")
+                return True
+
+        print(f"[H+ Check] Location {location_id}: NOT H+ Member")
+        return False
+
+    except Exception as e:
+        print(f"[H+ Check] Error checking membership for location {location_id}: {e}")
+    return False
 
 app = FastAPI(
     title="ServiceTitan Voice Agent",
@@ -58,39 +109,89 @@ async def health_check():
 
 
 @app.post("/check-business-hours")
-async def check_business_hours():
+async def check_business_hours(request: Request):
     """
-    Check if current time is within business hours (Mon-Fri 8AM-6PM EST).
-    Used by Sarah to decide emergency transfer destination.
+    Check business hours and return fee/eligibility info.
+
+    Optional request body:
+    - is_hplus_member: bool
+    - days_since_last_service: int
+    - is_emergency: bool (No A/C, No Heat - always eligible)
     """
-    from datetime import datetime
-    from zoneinfo import ZoneInfo
+    from app.services.business_hours import get_business_hours_info
 
-    # Get current time in EST
-    est = ZoneInfo("America/New_York")
-    now = datetime.now(est)
+    # Parse optional request body
+    is_hplus_member = False
+    days_since_last_service = None
+    is_emergency = False
 
-    current_hour = now.hour
-    current_day = now.weekday()  # 0=Monday, 6=Sunday
+    try:
+        data = await request.json()
+        args = data.get('args', data)
+        is_hplus_member = args.get('is_hplus_member', False)
+        days_since_last_service = args.get('days_since_last_service')
+        is_emergency = args.get('is_emergency', False)
+    except:
+        pass  # No body provided, use defaults
 
-    # Business hours: Mon-Fri (0-4), 8AM-6PM (8-18)
-    is_weekday = current_day < 5
-    is_business_time = 8 <= current_hour < 18
-    is_business_hours = is_weekday and is_business_time
+    result = get_business_hours_info(
+        is_hplus_member=is_hplus_member,
+        days_since_last_service=days_since_last_service,
+        is_emergency=is_emergency
+    )
 
-    # Determine transfer destination
-    transfer_to = "callcentre" if is_business_hours else "owner"
+    # Add transfer destination for emergency calls
+    if result["period"] == "standard":
+        result["transfer_to"] = "office"
+    else:
+        result["transfer_to"] = "after_hours_line"
 
-    result = {
-        "is_business_hours": is_business_hours,
-        "current_time": now.strftime("%I:%M %p EST"),
-        "current_day": now.strftime("%A"),
-        "transfer_to": transfer_to,
-        "message": f"Transfer to {transfer_to}" + (" (Bob)" if transfer_to == "owner" else "")
-    }
-
-    print(f"[BusinessHours] {now.strftime('%A %I:%M %p EST')} -> {transfer_to}")
+    print(f"[BusinessHours] {result['current_time']} | Period: {result['period']} | Fee: ${result['fee']} | Eligible: {result['eligible']} | Emergency: {is_emergency}")
     return result
+
+
+@app.post("/detect-campaign")
+async def detect_campaign(request: Request):
+    """
+    Detect the best matching campaign based on customer's referral response.
+    Uses AI to match "How did you hear about us?" answers to ServiceTitan campaigns.
+
+    Request body:
+    - referral_response: string (customer's answer, e.g., "Google", "a friend", "yard sign")
+
+    Returns:
+    - campaign_id: matched campaign ID
+    - campaign_name: matched campaign name
+    - confidence: high/medium/low
+    - reason: explanation of the match
+    """
+    data = await request.json()
+    args = data.get('args', data)
+    referral_response = args.get('referral_response') or args.get('referral') or args.get('source') or ""
+
+    if not referral_response:
+        return {
+            "campaign_id": None,
+            "campaign_name": None,
+            "confidence": "low",
+            "reason": "No referral response provided"
+        }
+
+    result = detect_campaign_from_referral(referral_response)
+    print(f"[DetectCampaign] '{referral_response}' -> {result['campaign_name']} (ID: {result['campaign_id']})")
+    return result
+
+
+@app.get("/test-campaigns")
+async def test_campaigns():
+    """
+    Fetch all active campaigns from ServiceTitan.
+    """
+    campaigns = get_all_campaigns(force_refresh=True)
+    return {
+        "count": len(campaigns),
+        "campaigns": campaigns
+    }
 
 
 @app.get("/test-st-connection")
@@ -153,12 +254,39 @@ _POSTCALL_CACHE_TTL = 300  # 5 minutes - prevent duplicate processing
 @app.post("/inbound-webhook")
 async def inbound_webhook(request: Request):
     """
-    Retell AI inbound call webhook - FAST response, no slow lookups.
-    Customer lookup happens later via lookup_by_address during the call.
-
-    Returns: caller_number, to_number, is_bill_guntrum (minimal for speed)
+    Retell AI webhook - handles BOTH call started AND call ended events.
+    Retell sends all events to the same webhook URL.
     """
     data = await request.json()
+
+    # DEBUG: Log all incoming webhook data to understand structure
+    event_type = data.get("event", "")
+    print(f"\n[Webhook DEBUG] ========================================")
+    print(f"[Webhook DEBUG] Event type: '{event_type}'")
+    print(f"[Webhook DEBUG] Top-level keys: {list(data.keys())}")
+    if "call" in data:
+        call_data = data.get("call", {})
+        print(f"[Webhook DEBUG] call.call_id: {call_data.get('call_id', 'N/A')}")
+        print(f"[Webhook DEBUG] call.call_status: {call_data.get('call_status', 'N/A')}")
+        print(f"[Webhook DEBUG] call.end_timestamp: {call_data.get('end_timestamp', 'N/A')}")
+        print(f"[Webhook DEBUG] Has transcript: {'transcript' in call_data}")
+        print(f"[Webhook DEBUG] Has recording_url: {'recording_url' in call_data}")
+    print(f"[Webhook DEBUG] ========================================\n")
+
+    # If this is a call_ended event, process it like post-call webhook
+    if event_type == "call_ended" or event_type == "call_analyzed":
+        print(f"[Webhook] Received {event_type} event - processing as post-call")
+        return await process_post_call(data)
+
+    # Also check if call has ended based on call_status or presence of transcript
+    call_data = data.get("call", {})
+    call_status = call_data.get("call_status", "")
+    has_transcript = bool(call_data.get("transcript"))
+    has_recording = bool(call_data.get("recording_url"))
+
+    if call_status == "ended" or (has_transcript and has_recording):
+        print(f"[Webhook] Detected ended call (status={call_status}, has_transcript={has_transcript}) - processing as post-call")
+        return await process_post_call(data)
 
     # Retell sends data under "call" or "call_inbound" depending on event type
     call_data = data.get("call", {}) or data.get("call_inbound", {})
@@ -480,6 +608,10 @@ async def check_service_area_endpoint(request: Request):
                                     customer_name = customer.get("name", "")
                                     formatted_addr = f"{loc_addr.get('street', '')}, {loc_addr.get('city', '')}, {loc_addr.get('state', '')} {loc_addr.get('zip', '')}"
 
+                                    # Check H+ membership via Memberships API (recurring services)
+                                    is_hplus_member = check_hplus_membership(location_id)
+                                    print(f"[CustomerLookup] Location {location_id} | H+ Member: {is_hplus_member}")
+
                                     # Get customer contacts (phone and email)
                                     contacts_url = f"https://api.servicetitan.io/crm/v2/tenant/{TENANT_ID}/customers/{customer_id}/contacts"
                                     contacts_resp = req.get(contacts_url, headers=headers)
@@ -500,11 +632,13 @@ async def check_service_area_endpoint(request: Request):
                                     result["customer_phone"] = customer_phone
                                     result["customer_email"] = customer_email
                                     result["formatted_address"] = formatted_addr.upper()
-                                    print(f"[CustomerLookup] Match: {customer_name} | {customer_phone} | {customer_email}")
+                                    result["is_hplus_member"] = is_hplus_member
+                                    print(f"[CustomerLookup] Match: {customer_name} | {customer_phone} | H+: {is_hplus_member}")
                                     break
 
                     if not result.get("found"):
                         result["found"] = False
+                        result["is_hplus_member"] = False
                         print(f"[CustomerLookup] No match found")
 
     return result
@@ -809,18 +943,14 @@ async def test_lead_with_address():
         }
 
 
-@app.post("/post-call-webhook")
-async def post_call_webhook(request: Request):
+async def process_post_call(data: dict):
     """
-    Retell AI post-call webhook.
-    Analyzes call transcript to determine if booking was made,
-    then either attaches recording to job or creates a lead.
+    Process post-call data - analyzes transcript, attaches recording to job or creates lead.
+    Called from both /post-call-webhook and /inbound-webhook (for call_ended events).
     """
     import requests
     from datetime import datetime, timedelta, timezone
     from openai import OpenAI
-
-    data = await request.json()
 
     # Extract call data from Retell payload
     call_data = data.get("call", {})
@@ -894,6 +1024,13 @@ async def post_call_webhook(request: Request):
     if mapped_job_id:
         print(f"[PostCall] Found mapping for call -> job {mapped_job_id}")
         booking_made = "yes"  # Override - we know booking was made
+    else:
+        # FALLBACK: Try phone-based mapping (from_number -> job_id)
+        phone_mapped_job_id = get_job_id_for_phone(from_number)
+        if phone_mapped_job_id:
+            print(f"[PostCall] Found mapping for phone {from_number} -> job {phone_mapped_job_id}")
+            mapped_job_id = phone_mapped_job_id
+            booking_made = "yes"
 
     # Check if transcript is empty or too short (no meaningful conversation)
     transcript_text = (transcript or "").strip()
@@ -972,6 +1109,12 @@ Recording: {recording_url}
         # FIRST: Check our call_id -> job_id mapping (most reliable)
         job_id = get_job_id_for_call(call_id)
 
+        # SECOND: Check phone-based mapping (from_number -> job_id)
+        if not job_id:
+            job_id = get_job_id_for_phone(from_number)
+            if job_id:
+                print(f"[PostCall] Found job from phone mapping: {job_id}")
+
         if job_id:
             print(f"[PostCall] Found job from call mapping: {job_id}")
             # Add note to job
@@ -983,53 +1126,68 @@ Recording: {recording_url}
                 print(f"[PostCall] Failed to add note to job {job_id}")
                 action_result = f"Job {job_id} (note failed)"
         else:
-            # FALLBACK: Search for recent job by phone (less reliable for shared numbers)
-            print(f"[PostCall] No mapping found, searching for recent job by phone...")
+            # FALLBACK: Search for recent jobs
+            print(f"[PostCall] No mapping found, searching for recent jobs...")
 
             jobs_url = f"https://api.servicetitan.io/jpm/v2/tenant/{TENANT_ID}/jobs"
-            params = {"pageSize": 5, "orderBy": "Id", "orderByDirection": "desc"}
+            found_job_id = None
 
+            # First try: search by caller's phone
             if cleaned_from_number:
-                params["phone"] = cleaned_from_number
+                params = {"pageSize": 5, "orderBy": "Id", "orderByDirection": "desc", "phone": cleaned_from_number}
+                jobs_resp = requests.get(jobs_url, headers=headers, params=params)
 
-            jobs_resp = requests.get(jobs_url, headers=headers, params=params)
+                if jobs_resp.status_code == 200:
+                    jobs = jobs_resp.json().get("data", [])
+                    ten_minutes_ago = datetime.now(timezone.utc) - timedelta(minutes=10)
 
-            if jobs_resp.status_code == 200:
-                jobs = jobs_resp.json().get("data", [])
-                found_job_id = None
+                    for job in jobs:
+                        created_on = job.get("createdOn", "")
+                        if created_on:
+                            try:
+                                job_created = datetime.fromisoformat(created_on.replace("Z", "+00:00"))
+                                if job_created > ten_minutes_ago:
+                                    found_job_id = job.get("id")
+                                    print(f"[PostCall] Found recent job by caller phone: {found_job_id}")
+                                    break
+                            except Exception as e:
+                                print(f"[PostCall] Error parsing job date: {e}")
 
-                # Find job created within last 2 hours
-                two_hours_ago = datetime.now(timezone.utc) - timedelta(hours=2)
+            # Second try: search recent jobs WITHOUT phone filter (for when caller != customer)
+            if not found_job_id:
+                print(f"[PostCall] No match by caller phone, checking most recent jobs...")
+                params = {"pageSize": 10, "orderBy": "Id", "orderByDirection": "desc"}
+                jobs_resp = requests.get(jobs_url, headers=headers, params=params)
 
-                for job in jobs:
-                    created_on = job.get("createdOn", "")
-                    if created_on:
-                        try:
-                            # Parse ISO format datetime
-                            job_created = datetime.fromisoformat(created_on.replace("Z", "+00:00"))
-                            if job_created > two_hours_ago:
-                                found_job_id = job.get("id")
-                                print(f"[PostCall] Found recent job by phone: {found_job_id}")
-                                break
-                        except Exception as e:
-                            print(f"[PostCall] Error parsing job date: {e}")
+                if jobs_resp.status_code == 200:
+                    jobs = jobs_resp.json().get("data", [])
+                    ten_minutes_ago = datetime.now(timezone.utc) - timedelta(minutes=10)
 
-                if found_job_id:
-                    # Add note to job
-                    note_url = f"https://api.servicetitan.io/jpm/v2/tenant/{TENANT_ID}/jobs/{found_job_id}/notes"
-                    note_resp = requests.post(note_url, headers=headers, json={"text": note_text})
+                    for job in jobs:
+                        created_on = job.get("createdOn", "")
+                        if created_on:
+                            try:
+                                job_created = datetime.fromisoformat(created_on.replace("Z", "+00:00"))
+                                if job_created > ten_minutes_ago:
+                                    found_job_id = job.get("id")
+                                    print(f"[PostCall] Found recent job by time: {found_job_id} (created {created_on})")
+                                    break
+                            except Exception as e:
+                                print(f"[PostCall] Error parsing job date: {e}")
 
-                    if note_resp.status_code in (200, 201):
-                        print(f"[PostCall] Booking detected - attaching to job {found_job_id}")
-                        action_result = f"Job {found_job_id}"
-                    else:
-                        print(f"[PostCall] Failed to add note to job: {note_resp.status_code} - {note_resp.text}")
-                        action_result = f"Job {found_job_id} (note failed)"
+            if found_job_id:
+                # Add note to job
+                note_url = f"https://api.servicetitan.io/jpm/v2/tenant/{TENANT_ID}/jobs/{found_job_id}/notes"
+                note_resp = requests.post(note_url, headers=headers, json={"text": note_text})
+
+                if note_resp.status_code in (200, 201):
+                    print(f"[PostCall] Booking detected - attaching to job {found_job_id}")
+                    action_result = f"Job {found_job_id}"
                 else:
-                    print("[PostCall] No recent job found, creating lead instead")
-                    booking_made = "no"  # Fall through to lead creation
+                    print(f"[PostCall] Failed to add note to job: {note_resp.status_code} - {note_resp.text}")
+                    action_result = f"Job {found_job_id} (note failed)"
             else:
-                print(f"[PostCall] Jobs lookup failed: {jobs_resp.status_code}")
+                print("[PostCall] No recent job found, creating lead instead")
                 booking_made = "no"  # Fall through to lead creation
 
     if booking_made != "yes":
@@ -1088,6 +1246,16 @@ Recording: {recording_url}
     print(f"[PostCall] {from_number} | {call_type} | {action_result}")
 
     return {"status": "ok"}
+
+
+@app.post("/post-call-webhook")
+async def post_call_webhook(request: Request):
+    """
+    Retell AI post-call webhook endpoint.
+    Wrapper that calls process_post_call with the request data.
+    """
+    data = await request.json()
+    return await process_post_call(data)
 
 
 @app.get("/test-technicians")

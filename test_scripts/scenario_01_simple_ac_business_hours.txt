@@ -1,0 +1,70 @@
+================================================================================
+VOICE AGENT TEST SCRIPT - SCENARIO 1
+Simple New Customer - AC Not Working (Business Hours)
+================================================================================
+
+PHONE NUMBER TO CALL: +1(440)336-8823
+
+--------------------------------------------------------------------------------
+YOUR CHARACTER INFORMATION (Memorize Before Calling)
+--------------------------------------------------------------------------------
+
+Name:           Sarah Johnson
+Phone:          440-555-9876
+Email:          sarah.johnson@email.com
+Address:        456 Oak Avenue, Mentor, OH 44060
+
+Your Problem:   Your AC stopped working completely yesterday. No air is coming
+                out of the vents at all. The system is about 8 years old.
+                You are the homeowner.
+
+Preferred Time: Morning window (8am-12pm)
+
+--------------------------------------------------------------------------------
+HOW THE CALL SHOULD GO
+--------------------------------------------------------------------------------
+
+1. Maria will greet you and ask how she can help
+
+2. Say something like:
+   "Hi, my air conditioning isn't working"
+
+3. Maria will ask for your information:
+   - Your name (Sarah Johnson)
+   - Your address (456 Oak Avenue, Mentor, OH 44060)
+   - Your phone number (440-555-9876)
+   - Your email (sarah.johnson@email.com)
+
+4. Maria will ask about the problem:
+   - Tell her: "The AC stopped working completely yesterday. No air coming
+     out of the vents. The system is about 8 years old."
+
+5. Maria should mention the $99 service fee
+
+6. Maria will ask about appointment time:
+   - Say: "Morning works best" or "The morning window"
+
+7. Maria will confirm the appointment details and complete the booking
+
+--------------------------------------------------------------------------------
+WHAT TO CHECK (Mark Pass/Fail)
+--------------------------------------------------------------------------------
+
+[ ] Maria greeted you professionally
+[ ] Maria collected your name correctly
+[ ] Maria collected your address correctly
+[ ] Maria collected your phone number correctly
+[ ] Maria collected your email correctly
+[ ] Maria asked about the problem/issue
+[ ] Maria mentioned the $99 service fee
+[ ] Maria offered morning (8-12) or afternoon (12-4) windows
+[ ] Maria confirmed the appointment at the end
+[ ] Maria was polite and easy to understand throughout
+
+--------------------------------------------------------------------------------
+NOTES (Write any issues or observations here)
+--------------------------------------------------------------------------------
+
+
+
+

@@ -1,0 +1,18 @@
+{
+  "name": "check_business_hours",
+  "description": "Check business hours, service fee, and booking eligibility. Call this AFTER collecting the customer's issue description. You MUST pass both is_hplus_member (from check_service_area) and is_emergency (true if customer has NO cooling or NO heat).",
+  "parameters": {
+    "type": "object",
+    "properties": {
+      "is_hplus_member": {
+        "type": "boolean",
+        "description": "Whether customer is a verified H+ member. Use the is_hplus_member value returned from check_service_area, NOT what the customer claimed."
+      },
+      "is_emergency": {
+        "type": "boolean",
+        "description": "Set to TRUE if: AC not working at all (no cooling), furnace/heat not working at all (no heat), house is very hot or very cold, baby/elderly/medical condition affected. Set to FALSE if: AC/heat running but not great, making noise, maintenance request, tune-up, quote request."
+      }
+    },
+    "required": ["is_hplus_member", "is_emergency"]
+  }
+}

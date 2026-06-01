@@ -39,7 +39,7 @@
     },
     "is_excavation": {
       "type": "boolean",
-      "description": "Set to true if Sarah identified the issue as requiring excavation work during the call. Set to false for all standard plumbing jobs. Pass as boolean, not string."
+      "description": "Set to true if Maria identified the issue as requiring excavation work during the call. Set to false for all standard plumbing jobs. Pass as boolean, not string."
     },
     "phone": {
       "type": "string",

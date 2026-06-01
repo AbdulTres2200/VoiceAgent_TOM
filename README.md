@@ -1,102 +1,102 @@
-# Sarah Voice Agent
+# Voice Agent - Hearn Plumbing, Heating & Air
 
-FastAPI backend connecting Retell AI voice agents to ServiceTitan CRM. Automates customer creation, job scheduling, and appointment booking.
+AI-powered voice agent "Maria" for Hearn Plumbing, Heating & Air. Built with Retell.ai and integrated with ServiceTitan CRM.
+
+## Overview
+
+Maria is an intelligent dispatcher that handles inbound calls, collects customer information, books appointments, and creates jobs directly in ServiceTitan. She supports both English and Spanish, handles H+ membership verification, and provides 24/7 availability.
 
 ## Features
 
-- **Automated Booking Flow** - Creates customer, location, job, and appointment in ServiceTitan
-- **Natural Language Dates** - Parses "tomorrow at 10am", "next monday", "asap" into ISO timestamps
-- **Smart Address Parsing** - Extracts street, city, state, zip from free-form addresses
-- **Phone Validation** - Cleans and validates US phone numbers
-- **Real-time Integration** - Direct API integration with ServiceTitan CRM/JPM v2
+- **Appointment Booking** - Collects customer info and creates jobs in ServiceTitan
+- **Service Area Verification** - Validates addresses against ServiceTitan zones
+- **H+ Membership Detection** - Checks and applies member pricing
+- **Smart Job Type Detection** - AI-powered classification (HVAC, Plumbing, Water Heater, etc.)
+- **Campaign Tracking** - Detects referral source and assigns campaigns
+- **Business Hours & Pricing** - Dynamic fee calculation based on time and membership
+- **Post-Call Processing** - Attaches transcripts and recordings to jobs
 
 ## Tech Stack
 
-- FastAPI
-- ServiceTitan CRM/JPM API v2
-- Retell AI
-- dateparser
-- usaddress
+- **Voice AI**: Retell.ai
+- **Backend**: FastAPI (Python)
+- **CRM**: ServiceTitan API
+- **AI**: OpenAI GPT-4o-mini (job type detection, campaign matching)
+- **Geocoding**: Google Maps API
 
-## Installation
+## Project Structure
 
-```bash
-# Clone the repo
-git clone https://github.com/AbdulTres2200/sarah_voice_agent.git
-cd sarah_voice_agent
-
-# Install dependencies
-pip install -r requirements.txt
-
-# Set up environment variables
-cp .env.example .env
-# Edit .env with your credentials
+```
+├── app/
+│   ├── main.py                 # FastAPI app & webhooks
+│   ├── routes/
+│   │   └── booking.py          # Appointment booking endpoint
+│   ├── services/
+│   │   ├── servicetitan.py     # ServiceTitan API integration
+│   │   ├── service_area.py     # Address validation & zones
+│   │   ├── business_hours.py   # Hours & pricing logic
+│   │   ├── dispatch.py         # Technician dispatch
+│   │   ├── retell.py           # Retell call tracking
+│   │   └── email_notify.py     # Email notifications
+│   └── webhooks/
+│       └── retell_webhook.py   # Retell webhook handlers
+├── prompts/
+│   └── tom_vagent_prompt_v2.txt  # Maria's conversation prompt
+├── retell_functions/           # Retell function definitions
+└── test_scripts/               # VA testing scenarios
 ```
 
 ## Environment Variables
 
 ```env
-# ServiceTitan Credentials
-TENANT_ID=your_tenant_id
-APP_KEY=your_app_key
-CLIENT_ID=your_client_id
-CLIENT_SECRET=your_client_secret
+# ServiceTitan
+TENANT_ID=
+APP_KEY=
+CLIENT_ID=
+CLIENT_SECRET=
 
-# ServiceTitan Job Configuration
-JOB_TYPE_ID=your_job_type_id
-BUSINESS_UNIT_ID=your_business_unit_id
-CAMPAIGN_ID=your_campaign_id
-JOB_PRIORITY=Normal
-DEFAULT_COUNTRY=US
-DEFAULT_ZIP=15201
-DEFAULT_STATE=PA
+# OpenAI
+OPENAI_API_KEY=
+
+# Retell
+RETELL_API_KEY=
+
+# Google Maps
+GOOGLE_MAPS_API_KEY=
+
+# Optional - Email notifications
+OUTLOOK_EMAIL=
+OUTLOOK_PASSWORD=
 ```
 
-## Running the Server
+## Endpoints
+
+| Endpoint | Description |
+|----------|-------------|
+| `POST /inbound-webhook` | Retell call events (started, ended, analyzed) |
+| `POST /check-service-area` | Validate address & check membership |
+| `POST /check-business-hours` | Get pricing based on time & membership |
+| `POST /book-appointment` | Create customer & job in ServiceTitan |
+
+## Deployment
+
+Configured for Railway deployment:
 
 ```bash
-uvicorn app.main:app --reload --host 0.0.0.0 --port 8000
+# Local development
+python3 -m uvicorn app.main:app --host 0.0.0.0 --port 8001 --reload
+
+# Production (Railway)
+# Uses Procfile: web: uvicorn app.main:app --host 0.0.0.0 --port $PORT
 ```
 
-## API Endpoints
+## Retell Configuration
 
-### POST /book-appointment
-
-Create a new booking in ServiceTitan.
-
-**Request:**
-```json
-{
-  "customer_name": "John Smith",
-  "address": "123 Main Street, Pittsburgh, PA 15213",
-  "phone": "4125551234",
-  "email": "john@example.com",
-  "issue_description": "Clogged drain",
-  "appointment_time": "tomorrow at 10am",
-  "customer_type": "Residential"
-}
-```
-
-**Response:**
-```json
-{
-  "success": true,
-  "message": "Your appointment has been booked successfully. Your job number is 123456.",
-  "booking_details": {
-    "customer_name": "John Smith",
-    "appointment_start": "2026-04-16T10:00:00Z",
-    "appointment_end": "2026-04-16T11:00:00Z",
-    "servicetitan_response": { ... }
-  }
-}
-```
-
-## Booking Flow
-
-1. **Create Customer** - POST to ServiceTitan /customers with name, address, contacts
-2. **Create Job** - POST to ServiceTitan /jobs with customer_id, location_id, summary
-3. **Appointment** - Included in job creation with start/end times
+1. Set webhook URL to `https://your-domain/inbound-webhook`
+2. Enable events: `call_started`, `call_ended`, `call_analyzed`
+3. Configure functions from `retell_functions/` folder
+4. Update agent prompt from `prompts/tom_vagent_prompt_v2.txt`
 
 ## License
 
-MIT
+Private - Hearn Plumbing, Heating & Air

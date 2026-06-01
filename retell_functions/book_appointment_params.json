@@ -1,0 +1,38 @@
+{
+  "type": "object",
+  "properties": {
+    "customer_name": {
+      "type": "string",
+      "description": "Customer's full name (First Last). Example: 'John Smith'"
+    },
+    "phone": {
+      "type": "string",
+      "description": "Customer's primary phone number"
+    },
+    "email": {
+      "type": "string",
+      "description": "Customer's email address"
+    },
+    "address": {
+      "type": "string",
+      "description": "Full service address including street, city, state, and zip. Example: '123 Main Street, Painesville, OH 44077'"
+    },
+    "issue": {
+      "type": "string",
+      "description": "REQUIRED: Full description of customer's problem. Include: what's wrong, equipment type (AC, furnace, boiler), system age, how long problem occurring, vulnerable occupants (baby, elderly). Example: 'AC not working at all, no air from vents, 10 year old system, started yesterday, has baby in home'"
+    },
+    "appointment_time": {
+      "type": "string",
+      "description": "Requested appointment window. Use exactly: 'morning 8-12' for morning, 'afternoon 12-4' for afternoon, or 'asap' for emergency same-day service"
+    },
+    "is_emergency": {
+      "type": "boolean",
+      "description": "Set to TRUE for No A/C or No Heat situations with vulnerable occupants. Set to FALSE for minor issues, maintenance, tune-ups, quotes."
+    },
+    "referral_source": {
+      "type": "string",
+      "description": "IMPORTANT: Pass the CUSTOMER'S EXACT WORDS when they answered 'How did you hear about us?' - NOT your acknowledgment like 'Perfect' or 'Great'. Examples of correct values: 'Google', 'my friend John', 'I saw your yard sign', 'Facebook ad', 'used you before'. If customer didn't say, use 'not specified'."
+    }
+  },
+  "required": ["customer_name", "phone", "email", "address", "issue", "appointment_time", "is_emergency", "referral_source"]
+}

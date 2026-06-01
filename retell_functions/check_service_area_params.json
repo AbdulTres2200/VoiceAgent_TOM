@@ -1,0 +1,14 @@
+{
+  "type": "object",
+  "properties": {
+    "address": {
+      "type": "string",
+      "description": "Customer's full address including street, city, state, and zip code. Example: '123 Main Street, Painesville, OH 44077'"
+    },
+    "phone": {
+      "type": "string",
+      "description": "Customer's phone number for membership lookup"
+    }
+  },
+  "required": ["address", "phone"]
+}

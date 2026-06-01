@@ -1,5 +1,5 @@
 """
-Email notification service for Sarah AI call summaries.
+Email notification service for Maria AI call summaries.
 Sends mobile-friendly email summaries after each call.
 """
 
@@ -135,7 +135,7 @@ def send_call_summary(
             ''' if error else ''}
 
             <p style="font-size: 12px; color: #666; text-align: center; margin-top: 20px;">
-                Sarah AI - Mr. Rooter Plumbing
+                Maria AI - Hearn Plumbing, Heating & Air
             </p>
         </body>
         </html>
@@ -169,7 +169,7 @@ Phone: {phone}
 {f'Dispatch: {dispatch_status}' if dispatch_status else ''}
 {f'Error: {error}' if error else ''}
 
-- Sarah AI
+- Maria AI
         """
 
         msg.attach(MIMEText(plain_text, "plain"))

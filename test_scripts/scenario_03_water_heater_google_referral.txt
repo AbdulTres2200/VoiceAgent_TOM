@@ -1,0 +1,89 @@
+================================================================================
+VOICE AGENT TEST SCRIPT - SCENARIO 3
+New Customer - Water Heater Issue (Google Referral)
+================================================================================
+
+PHONE NUMBER TO CALL: +1(440)336-8823
+
+--------------------------------------------------------------------------------
+YOUR CHARACTER INFORMATION (Memorize Before Calling)
+--------------------------------------------------------------------------------
+
+Name:           David Miller
+Phone:          440-555-7890
+Email:          david.miller@email.com
+Address:        321 Pine Street, Willoughby, OH 44094
+
+Your Problem:   Your water heater is not producing hot water.
+                You have no hot water at all.
+                The water heater is about 12 years old.
+                It's a gas water heater.
+
+Preferred Time: Morning window (8am-12pm)
+
+How you heard:  "I found you on Google"
+
+--------------------------------------------------------------------------------
+HOW THE CALL SHOULD GO
+--------------------------------------------------------------------------------
+
+1. Maria will greet you
+
+2. Say: "Hi, my water heater isn't working. I have no hot water."
+
+3. Maria asks if you're an H+ Member:
+   - Say: "No, first time calling"
+
+4. Maria asks how you heard about them:
+   - Say: "I found you on Google"
+   - Maria should say something brief like "Awesome, glad you found us!"
+   - She should NOT ask follow-up questions
+
+5. Maria collects your info (she should NOT sound choppy when repeating):
+   - Name: David Miller (spell if asked: D-A-V-I-D  M-I-L-L-E-R)
+   - Address: 321 Pine Street, Willoughby, OH 44094
+   - Phone: 440-555-7890
+   - Email: david.miller@email.com
+
+6. Maria asks about the problem:
+   - "No hot water at all. The water heater is about 12 years old. It's a gas unit."
+
+7. Maria mentions $99 fee - confirm with "Yes, that's fine"
+
+8. Maria asks about appointment time:
+   - Say: "Morning please"
+
+9. Maria does final confirmation (ONE question at a time):
+   - Address → "Yes"
+   - Call or text → "Text"
+   - Fee → "Yes"
+
+--------------------------------------------------------------------------------
+WHAT TO CHECK (Mark Pass/Fail)
+--------------------------------------------------------------------------------
+
+[ ] Maria's voice sounds natural and clear (NOT choppy or distorted)
+[ ] Maria did NOT over-spell things with NATO alphabet unless needed
+[ ] Referral response was brief (no follow-up questions about Google)
+[ ] Maria asked questions ONE AT A TIME (not combined)
+[ ] Maria waited for answers before moving on
+[ ] Final confirmation was done step-by-step (not all at once)
+[ ] $99 fee was mentioned AND confirmed before booking
+[ ] Overall call felt smooth and professional
+
+--------------------------------------------------------------------------------
+NOTES (Write any issues or observations here)
+--------------------------------------------------------------------------------
+
+Voice Quality:
+
+
+Pacing Issues:
+
+
+Other Notes:
+
+
+--------------------------------------------------------------------------------
+RESULT:  [ ] PASS    [ ] FAIL
+--------------------------------------------------------------------------------

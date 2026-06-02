@@ -195,8 +195,8 @@ async def retell_webhook(request: Request):
             print(f"║  Found job_id from local mapping: {job_id:<26} ║")
 
     # Get dynamic variables for lead creation
-    campaign_id = dynamic_vars.get("campaign_id", 1410706053)
-    business_unit_id = dynamic_vars.get("business_unit_id", 1239)
+    campaign_id = dynamic_vars.get("campaign_id", 1000001)
+    business_unit_id = dynamic_vars.get("business_unit_id", 405)  # PLMG Res Service
     from_number = data.get("from_number", "")
     to_number = data.get("to_number", "")
 
@@ -272,10 +272,10 @@ async def retell_webhook(request: Request):
             duration_ms = stored_data.get("duration_ms", 0)
         if not from_number:
             from_number = stored_data.get("from_number", "")
-        if not campaign_id or campaign_id == 1410706053:
-            campaign_id = stored_data.get("campaign_id", 1410706053)
-        if not business_unit_id or business_unit_id == 1239:
-            business_unit_id = stored_data.get("business_unit_id", 1239)
+        if not campaign_id or campaign_id == 1000001:
+            campaign_id = stored_data.get("campaign_id", 1000001)
+        if not business_unit_id or business_unit_id == 405:
+            business_unit_id = stored_data.get("business_unit_id", 405)  # PLMG Res Service
 
         # Also check stored data from call_ended event for job_id
         if not job_id:

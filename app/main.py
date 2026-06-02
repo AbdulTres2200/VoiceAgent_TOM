@@ -889,8 +889,8 @@ async def test_create_lead():
         call_type="INQUIRY",
         summary="Caller asked about water heater pricing, not ready to book",
         from_number="4125550001",
-        campaign_id=1410706053,
-        business_unit_id=1239
+        campaign_id=1000001,  # Imported Campaign (default)
+        business_unit_id=405   # PLMG Res Service
     )
 
     if lead_id:
@@ -926,8 +926,8 @@ async def test_lead_with_address():
         call_type="INQUIRY",
         summary="The caller reported a backed-up drain in their basement. Address is outside service area, transferred to regional specialists.",
         from_number="7245538700",
-        campaign_id=1410706053,
-        business_unit_id=1239
+        campaign_id=1000001,  # Imported Campaign (default)
+        business_unit_id=405   # PLMG Res Service
     )
 
     if lead_id:
@@ -988,8 +988,8 @@ async def process_post_call(data: dict):
     dynamic_variables = call_data.get("retell_llm_dynamic_variables", {})
     collected_variables = call_data.get("collected_dynamic_variables", {})
     customer_name = dynamic_variables.get("customer_name", "Unknown")
-    campaign_id = dynamic_variables.get("campaign_id", 1410706053)
-    business_unit_id = dynamic_variables.get("business_unit_id", 1239)
+    campaign_id = dynamic_variables.get("campaign_id", 1000001)  # Imported Campaign (default)
+    business_unit_id = dynamic_variables.get("business_unit_id", 405)  # PLMG Res Service
 
     # Clean phone number
     cleaned_from_number = clean_phone(from_number)
@@ -1401,8 +1401,8 @@ async def test_excavation(customer_email: str = None):
         customer_id=1811510751,  # Existing test customer
         location_id=1811510759,
         summary="Excavation needed - pipe burst outside",
-        campaign_id=1410706053,
-        business_unit_id=1239,
+        campaign_id=1000001,  # Imported Campaign (default)
+        business_unit_id=405,  # PLMG Res Service
         appointment_time="morning window 8-12",
         customer_name="Test Customer",
         customer_email=customer_email,

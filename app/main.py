@@ -140,8 +140,10 @@ async def check_business_hours(request: Request):
         is_emergency=is_emergency
     )
 
-    # Add transfer destination for emergency calls
-    if result["period"] == "standard":
+    # Add transfer destination - only for eligible customers
+    if not result["eligible"]:
+        result["transfer_to"] = None
+    elif result["period"] == "standard":
         result["transfer_to"] = "office"
     else:
         result["transfer_to"] = "after_hours_line"

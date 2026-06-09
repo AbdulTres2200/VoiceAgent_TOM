@@ -240,36 +240,64 @@ def check_eligibility(period: str, is_hplus_member: bool, days_since_last_servic
     """
     Check if customer is eligible for service.
 
-    Emergencies (No A/C, No Heat): ALWAYS eligible - these are urgent situations
-    After Hours & Weekends: H+ Members OR serviced in last 30 days OR emergency
-    Standard & Holidays: All customers eligible
+    Policy:
+    - Standard hours & Holidays: All customers eligible
+    - After-hours/weekends (non-emergency): H+ Members OR serviced in last 30 days
+    - After-hours/weekends emergency:
+        - H+ Members: Eligible for immediate after-hours service
+        - Non-members: NOT eligible for after-hours; booked next business day at standard rate ($99)
     """
-    # Emergencies always get service - safety first
-    if is_emergency:
-        return {
-            "eligible": True,
-            "reason": "Emergency service - eligible regardless of membership status",
-            "is_emergency": True
-        }
-
+    # Standard hours or holidays: everyone eligible
     if period in ("standard", "holiday"):
+        if is_emergency:
+            return {
+                "eligible": True,
+                "reason": "Emergency service during business hours",
+                "is_emergency": True
+            }
         return {"eligible": True, "reason": "All customers can book during this time"}
 
-    if is_hplus_member:
-        return {"eligible": True, "reason": "H+ Members can book after hours and weekends"}
+    # After-hours/weekend logic
+    if period in ("after_hours", "weekend"):
+        # H+ Members can always book after-hours (emergency or not)
+        if is_hplus_member:
+            if is_emergency:
+                return {
+                    "eligible": True,
+                    "reason": "H+ Member emergency - eligible for after-hours service",
+                    "is_emergency": True
+                }
+            return {"eligible": True, "reason": "H+ Members can book after hours and weekends"}
 
-    if days_since_last_service is not None and days_since_last_service <= 30:
+        # Non-member with recent service can book after-hours (non-emergency only)
+        if days_since_last_service is not None and days_since_last_service <= 30 and not is_emergency:
+            return {
+                "eligible": True,
+                "reason": f"Serviced {days_since_last_service} days ago - eligible for after-hours"
+            }
+
+        # NON-MEMBER after-hours EMERGENCY: NOT eligible for after-hours service
+        # They get booked for next business day at standard rate ($99)
+        if is_emergency:
+            return {
+                "eligible": False,
+                "reason": "After-hours emergency service is for H+ members only; non-member booked for next business day",
+                "is_emergency": True,
+                "offer_next_business_day": True,
+                "use_standard_fee": True,
+                "weekday_message": "Our after-hours emergency service is reserved for H+ members. However, I can get you scheduled for our first available appointment tomorrow morning between 8 and 12, or afternoon between 12 and 4. The service fee would be $99. Would one of those work for you?"
+            }
+
+        # NON-MEMBER after-hours (non-emergency): offer weekday booking
         return {
-            "eligible": True,
-            "reason": f"Serviced {days_since_last_service} days ago - eligible for after-hours"
+            "eligible": False,
+            "reason": "After-hours service is only for H+ Members or customers serviced in the last 30 days",
+            "offer_weekday": True,
+            "weekday_message": "I can get you scheduled for our first available appointment Monday morning between 8 and 12, or Monday afternoon between 12 and 4. Would one of those work for you?"
         }
 
-    return {
-        "eligible": False,
-        "reason": "After-hours service is only for H+ Members or customers serviced in the last 30 days",
-        "offer_weekday": True,
-        "weekday_message": "I can get you scheduled for our first available appointment Monday morning between 8 and 12, or Monday afternoon between 12 and 4. Would one of those work for you?"
-    }
+    # Fallback (shouldn't reach here)
+    return {"eligible": True, "reason": "Eligible for service"}
 
 
 def get_business_hours_info(is_hplus_member: bool = False, days_since_last_service: int = None, is_emergency: bool = False) -> Dict:
@@ -288,9 +316,15 @@ def get_business_hours_info(is_hplus_member: bool = False, days_since_last_servi
     period_info = get_time_period(now)
     period = period_info["period"]
 
-    fee_info = get_service_fee(period, is_hplus_member)
     windows = get_booking_windows(period, now)
     eligibility = check_eligibility(period, is_hplus_member, days_since_last_service, is_emergency)
+
+    # Use standard fee if eligibility override flag is set
+    # (non-member emergency after-hours gets next-business-day at $99, not $199)
+    if eligibility.get("use_standard_fee"):
+        fee_info = get_service_fee("standard", is_hplus_member)
+    else:
+        fee_info = get_service_fee(period, is_hplus_member)
 
     result = {
         "current_time": now.strftime("%A, %B %d at %I:%M %p"),
@@ -308,6 +342,11 @@ def get_business_hours_info(is_hplus_member: bool = False, days_since_last_servi
     # Add weekday offer message if not eligible
     if eligibility.get("offer_weekday"):
         result["offer_weekday"] = True
+        result["weekday_message"] = eligibility["weekday_message"]
+
+    # Add next business day offer for non-member emergency after-hours
+    if eligibility.get("offer_next_business_day"):
+        result["offer_next_business_day"] = True
         result["weekday_message"] = eligibility["weekday_message"]
 
     if period_info.get("holiday_name"):
